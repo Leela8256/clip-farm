@@ -9,6 +9,7 @@ the turn completes rather than receiving it back from the node.
 """
 
 from __future__ import annotations
+import asyncio
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -35,9 +36,26 @@ class ChatRequest(BaseModel):
     chat_history: list = []
 
 
+# Sync SQLAlchemy calls are wrapped in asyncio.to_thread so they don't block
+# the event loop this async route shares with the WebSocket status relays.
+
+
+def _persist_turn(job_id: str, user_message: str, assistant_message: str) -> dict | None:
+    """Record the chat turn and return the agent-mutated EDL (read after the
+    agent's tool calls have committed). Runs in a worker thread."""
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        if job is None:
+            raise HTTPException(404, "Job not found")
+        edl = job.edl
+        session.add(ChatTurn(job_id=job_id, role="user", content=user_message))
+        session.add(ChatTurn(job_id=job_id, role="assistant", content=assistant_message))
+    return edl
+
+
 @router.post("/chat/{job_id}")
 async def chat(job_id: str, req: ChatRequest):
-    transcript = load_state(job_id, "transcript")
+    transcript = await asyncio.to_thread(load_state, job_id, "transcript")
     if transcript is None:
         raise HTTPException(404, "Job not ready — transcription must finish first")
 
@@ -50,13 +68,7 @@ async def chat(job_id: str, req: ChatRequest):
     )
     assistant_message = result["assistant_message"]
 
-    with get_session() as session:
-        job = session.get(Job, job_id)
-        if job is None:
-            raise HTTPException(404, "Job not found")
-        edl = job.edl
-        session.add(ChatTurn(job_id=job_id, role="user", content=req.message))
-        session.add(ChatTurn(job_id=job_id, role="assistant", content=assistant_message))
+    edl = await asyncio.to_thread(_persist_turn, job_id, req.message, assistant_message)
 
     new_history = req.chat_history + [
         {"role": "user", "content": req.message},

@@ -57,12 +57,24 @@ class ChatEditorNode:
         client = RocketRideClient(
             uri=os.environ["ROCKETRIDE_URI"], auth=os.environ["ROCKETRIDE_APIKEY"]
         )
+        connected = False
         try:
             await client.connect()
+            connected = True
             token = await self._ensure_started(client)
             response = await client.chat(token=token, question=question)
+        except Exception:
+            # The cached token may be stale (pipeline idle-expired / terminated).
+            # Drop it so the next turn re-starts the pipeline via use() instead
+            # of reusing a dead token forever.
+            self._token = None
+            raise
         finally:
-            await client.disconnect()
+            # Only disconnect if connect() actually succeeded — calling
+            # disconnect() on a never-connected client can raise and mask the
+            # real error.
+            if connected:
+                await client.disconnect()
 
         answers = response.get("answers") or []
         assistant_message = answers[0] if answers else "(no response from editor agent)"

@@ -5,6 +5,12 @@ The frontend opens one socket per job and receives stage/terminal events as
 Celery tasks publish them (see workers/events.py). On connect, it also sends
 the job's current status from Postgres so a client that connects mid-job
 doesn't have to wait for the next event to know where things stand.
+
+Ordering matters: we subscribe to the Redis channel BEFORE reading the
+snapshot. Redis pub/sub is fire-and-forget with no replay, so subscribing
+after the snapshot read would drop any event a fast task fires in the gap.
+Subscribing first means at worst the client sees a stage event slightly
+before the snapshot — harmless — instead of missing the terminal event.
 """
 
 from __future__ import annotations
@@ -20,6 +26,8 @@ from db.session import get_session
 from db.models import Job
 
 router = APIRouter()
+
+_TERMINAL = {"done", "ready", "error"}
 
 
 def _snapshot(job_id: str) -> dict | None:
@@ -40,15 +48,29 @@ def _snapshot(job_id: str) -> dict | None:
 async def job_status_ws(websocket: WebSocket, job_id: str):
     await websocket.accept()
 
-    snapshot = _snapshot(job_id)
+    redis_client = aioredis.from_url(REDIS_URL)
+    pubsub = redis_client.pubsub()
+    # Subscribe FIRST so no event is lost between the snapshot read and here.
+    await pubsub.subscribe(f"{CHANNEL_PREFIX}{job_id}")
+
+    # Sync DB read off the event loop so it doesn't stall other sockets.
+    snapshot = await asyncio.to_thread(_snapshot, job_id)
     if snapshot is None:
+        await pubsub.unsubscribe(f"{CHANNEL_PREFIX}{job_id}")
+        await pubsub.aclose()
+        await redis_client.aclose()
         await websocket.close(code=4404, reason="Job not found")
         return
     await websocket.send_json(snapshot)
 
-    redis_client = aioredis.from_url(REDIS_URL)
-    pubsub = redis_client.pubsub()
-    await pubsub.subscribe(f"{CHANNEL_PREFIX}{job_id}")
+    # If the job already reached a terminal state before we connected, the
+    # snapshot is all there is — no further events will come. Close cleanly.
+    if snapshot["status"] in _TERMINAL:
+        await pubsub.unsubscribe(f"{CHANNEL_PREFIX}{job_id}")
+        await pubsub.aclose()
+        await redis_client.aclose()
+        await websocket.close()
+        return
 
     async def relay_events():
         while True:

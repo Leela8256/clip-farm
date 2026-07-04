@@ -8,6 +8,7 @@ mutations go through Postgres via db.session, same as the rest of the app.
 """
 
 from __future__ import annotations
+from contextlib import contextmanager
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -28,11 +29,20 @@ def _load_job_state(job_id: str) -> tuple[dict, EditDecisionList]:
     return transcript, EditDecisionList.from_dict(edl_dict)
 
 
-def _save_edl(job_id: str, edl: EditDecisionList) -> None:
+@contextmanager
+def _mutate_edl(job_id: str):
+    """
+    Read-modify-write the EDL inside a single row-locked transaction, so two
+    concurrent agent tool calls (the pipe allows up to 5 in flight) can't both
+    read the same EDL, each append a cut, and clobber each other — one cut
+    would silently vanish. `SELECT ... FOR UPDATE` serializes them.
+    """
     with get_session() as session:
-        job = session.get(Job, job_id)
-        if job is None:
-            raise HTTPException(404, f"Job {job_id} not found")
+        job = session.get(Job, job_id, with_for_update=True)
+        if job is None or job.edl is None:
+            raise HTTPException(404, f"Job {job_id} not ready — transcription must finish first")
+        edl = EditDecisionList.from_dict(job.edl)
+        yield edl
         job.edl = edl.to_dict()
 
 
@@ -80,14 +90,14 @@ class ApplyCutRequest(BaseModel):
 
 @router.post("/internal/tools/apply_cut")
 def apply_cut(req: ApplyCutRequest):
-    _, edl = _load_job_state(req.job_id)
-    edit = edl.add_cut(req.start_ms, req.end_ms, req.reason, source="agent")
-    _save_edl(req.job_id, edl)
-    return {
-        "applied": edit.to_dict(),
-        "output_duration_ms": edl.output_duration_ms(),
-        "total_cuts": len(edl.edits),
-    }
+    with _mutate_edl(req.job_id) as edl:
+        edit = edl.add_cut(req.start_ms, req.end_ms, req.reason, source="agent")
+        result = {
+            "applied": edit.to_dict(),
+            "output_duration_ms": edl.output_duration_ms(),
+            "total_cuts": len(edl.edits),
+        }
+    return result
 
 
 class UndoCutRequest(BaseModel):
@@ -97,10 +107,10 @@ class UndoCutRequest(BaseModel):
 
 @router.post("/internal/tools/undo_cut")
 def undo_cut(req: UndoCutRequest):
-    _, edl = _load_job_state(req.job_id)
-    removed = edl.remove_cut(req.edit_id)
-    _save_edl(req.job_id, edl)
-    return {"removed": removed, "total_cuts": len(edl.edits)}
+    with _mutate_edl(req.job_id) as edl:
+        removed = edl.remove_cut(req.edit_id)
+        result = {"removed": removed, "total_cuts": len(edl.edits)}
+    return result
 
 
 @router.get("/internal/tools/list_cuts")

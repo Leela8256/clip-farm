@@ -44,30 +44,47 @@ function EditorPage() {
   useEffect(() => {
     if (!jobId) return;
 
+    // Load transcript + EDL into the chat-editing workspace. Called both when
+    // transcription finishes ("ready") and when reconnecting to an already-ready
+    // job (snapshot), so a client that connects late still gets the workspace.
+    const loadWorkspace = async () => {
+      try {
+        setTranscript(await api.transcript(jobId));
+        setEdl(await api.edl(jobId));
+      } catch {}
+    };
+
+    const handleStatus = async (status: string, finalFile?: string | null) => {
+      setJobStatus(status);
+      if (status === "done") {
+        setDone(true);
+      } else if (status === "ready") {
+        // Chat mode: transcription finished, enter the editing workspace.
+        await loadWorkspace();
+      } else if (status === "error") {
+        setError("The pipeline failed. Check the worker logs for details.");
+      }
+    };
+
     const handleEvent = async (event: JobEvent) => {
       if (event.type === "snapshot") {
-        setJobStatus(event.status);
         setStage(event.stage);
-        setError(event.error);
-        if (event.status === "done") setDone(true);
+        if (event.error) setError(event.error);
+        await handleStatus(event.status, event.final_file);
       } else if (event.type === "stage") {
         setStage(event.stage);
         setJobStatus("running");
       } else if (event.type === "terminal") {
-        setJobStatus(event.status);
-        if (event.status === "done") {
-          if (mode === "autopilot" || rendering) setDone(true);
-          try {
-            setTranscript(await api.transcript(jobId));
-            setEdl(await api.edl(jobId));
-          } catch {}
-        }
-        if (event.status !== "done") setError(event.status);
+        await handleStatus(event.status, event.final_file);
       }
     };
 
     return watchJob(jobId, handleEvent);
-  }, [jobId, mode, rendering]);
+    // `mode`/`rendering` are intentionally NOT deps: the handler reads current
+    // status directly, and re-subscribing mid-render would drop the fire-and-
+    // forget terminal event (Redis pub/sub has no replay).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId]);
 
   const onChat = useCallback(
     async (message: string) => {
