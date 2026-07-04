@@ -15,7 +15,13 @@
       "provider": "memory_internal",
       "config": {
         "type": "memory_internal"
-      }
+      },
+      "control": [
+        {
+          "classType": "memory",
+          "from": "editor_agent"
+        }
+      ]
     },
     {
       "id": "edl_tools",
@@ -37,7 +43,13 @@
         "rateLimitPerSecond": 10,
         "rateLimitPerMinute": 100,
         "maxConcurrentRequests": 5
-      }
+      },
+      "control": [
+        {
+          "classType": "tool",
+          "from": "editor_agent"
+        }
+      ]
     },
     {
       "id": "editor_llm",
@@ -47,7 +59,13 @@
         "claude-sonnet-4-6": {
           "apikey": "${ROCKETRIDE_ANTHROPIC_KEY}"
         }
-      }
+      },
+      "control": [
+        {
+          "classType": "llm",
+          "from": "editor_agent"
+        }
+      ]
     },
     {
       "id": "editor_agent",
@@ -70,20 +88,6 @@
           "lane": "questions",
           "from": "chat_source"
         }
-      ],
-      "control": [
-        {
-          "classType": "llm",
-          "from": "editor_llm"
-        },
-        {
-          "classType": "memory",
-          "from": "edl_memory"
-        },
-        {
-          "classType": "tool",
-          "from": "edl_tools"
-        }
       ]
     },
     {
@@ -100,7 +104,7 @@
       ]
     }
   ],
-  "project_id": "73dc00e2-ca6b-451b-b16d-3f118acc4546",
+  "project_id": "3287f6c4-8a60-41f1-b1a9-d7c64bb2c876",
   "viewport": {
     "x": 0,
     "y": 0,

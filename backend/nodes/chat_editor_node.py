@@ -17,7 +17,13 @@ from pathlib import Path
 from rocketride import RocketRideClient
 from rocketride.schema import Question, QuestionHistory
 
-PIPE_PATH = str(Path(__file__).resolve().parents[2] / ".rocketride" / "chat_editor.pipe")
+# Defaults to the repo-root-relative path for host execution; the api/worker
+# containers mount .rocketride/ at /rocketride and set CHAT_PIPE_PATH
+# accordingly (see docker-compose.yml) since /app only has backend/ mounted.
+PIPE_PATH = os.getenv(
+    "CHAT_PIPE_PATH",
+    str(Path(__file__).resolve().parents[2] / ".rocketride" / "chat_editor.pipe"),
+)
 
 
 class ChatEditorNode:

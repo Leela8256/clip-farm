@@ -39,7 +39,8 @@ services:
       # container — host.docker.internal lets both directions of that call work:
       # this container reaching the engine, and the engine's tool_http_request
       # node reaching back into this container's /api/internal/tools/*.
-      ROCKETRIDE_URI: ${ROCKETRIDE_URI:-http://host.docker.internal:5565}
+      ROCKETRIDE_URI: http://host.docker.internal:5565
+      CHAT_PIPE_PATH: /rocketride/chat_editor.pipe
     depends_on:
       redis:
         condition: service_started
@@ -48,6 +49,7 @@ services:
     volumes:
       - ./backend:/app
       - ./assets:/app/assets
+      - ./.rocketride:/rocketride
       - tmp-data:/app/tmp
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -59,6 +61,8 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://rocketride:rocketride@postgres:5432/rocketride_podcasts
+      ROCKETRIDE_URI: http://host.docker.internal:5565
+      CHAT_PIPE_PATH: /rocketride/chat_editor.pipe
     depends_on:
       redis:
         condition: service_started
@@ -67,7 +71,10 @@ services:
     volumes:
       - ./backend:/app
       - ./assets:/app/assets
+      - ./.rocketride:/rocketride
       - tmp-data:/app/tmp
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   redis-data:
