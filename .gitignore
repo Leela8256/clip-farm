@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+.next/
+out/
+
+# Environment
+.env
+
+# App data
+tmp/
+*.log
+
+# OS
+.DS_Store
+.rocketride/*
+!.rocketride/podcast_pipeline.pipe
+
+# Claude Code
+.claude/scheduled_tasks.lock

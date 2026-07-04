@@ -1,0 +1,56 @@
+{
+  "name": "podcast_autopilot_pipeline",
+  "version": "0.1.0",
+  "description": "End-to-end podcast editing: transcribe -> auto-clean -> render -> master -> brand merge. Open in VS Code with the RocketRide extension to view on the visual canvas.",
+  "source": {
+    "type": "webhook",
+    "id": "source_upload",
+    "outputs": { "audio_path": "text" }
+  },
+  "nodes": [
+    {
+      "id": "transcription",
+      "type": "python",
+      "module": "backend.nodes.transcription_node",
+      "class": "TranscriptionNode",
+      "inputs": { "audio_path": "source_upload.audio_path" },
+      "outputs": { "transcript": "json" }
+    },
+    {
+      "id": "auto_cleanup",
+      "type": "python",
+      "module": "backend.nodes.auto_cleanup_node",
+      "class": "AutoCleanupNode",
+      "inputs": {
+        "audio_path": "source_upload.audio_path",
+        "transcript": "transcription.transcript"
+      },
+      "outputs": { "edl": "json" }
+    },
+    {
+      "id": "audio_dsp",
+      "type": "python",
+      "module": "backend.nodes.audio_dsp_node",
+      "class": "AudioDSPNode",
+      "inputs": { "edl": "auto_cleanup.edl" },
+      "outputs": { "rendered_wav": "text" }
+    },
+    {
+      "id": "mastering",
+      "type": "python",
+      "module": "backend.nodes.mastering_node",
+      "class": "MasteringNode",
+      "inputs": { "rendered_wav": "audio_dsp.rendered_wav" },
+      "outputs": { "mastered_file": "text" }
+    },
+    {
+      "id": "brand_merge",
+      "type": "python",
+      "module": "backend.nodes.brand_merge_node",
+      "class": "BrandMergeNode",
+      "inputs": { "mastered_file": "mastering.mastered_file" },
+      "outputs": { "final_file": "text" }
+    }
+  ],
+  "sink": { "from": "brand_merge.final_file" }
+}
