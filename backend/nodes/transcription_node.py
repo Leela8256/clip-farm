@@ -19,7 +19,7 @@ _model_cache: dict[str, WhisperModel] = {}
 
 
 def _get_model() -> WhisperModel:
-    name = os.getenv("WHISPER_MODEL", "base")
+    name = os.getenv("WHISPER_MODEL", "medium")
     device = os.getenv("WHISPER_DEVICE", "cpu")
     key = f"{name}:{device}"
     if key not in _model_cache:

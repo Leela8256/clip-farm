@@ -6,5 +6,17 @@ services:
     volumes:
       - redis-data:/data
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rocketride
+      POSTGRES_PASSWORD: rocketride
+      POSTGRES_DB: rocketride_podcasts
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
 volumes:
   redis-data:
+  postgres-data:

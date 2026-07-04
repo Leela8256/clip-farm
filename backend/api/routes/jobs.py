@@ -9,6 +9,8 @@ from pydantic import BaseModel
 from celery.result import AsyncResult
 from workers.celery_app import celery_app
 from workers.tasks import run_autopilot, run_transcribe_only, render_and_finish, load_state
+from db.session import get_session
+from db.models import Job
 
 router = APIRouter()
 
@@ -23,13 +25,16 @@ class StartJobRequest(BaseModel):
 def start_job(req: StartJobRequest):
     if not Path(req.audio_path).exists():
         raise HTTPException(404, "Audio file not found — upload first")
+    if req.mode not in ("autopilot", "chat"):
+        raise HTTPException(400, "mode must be 'autopilot' or 'chat'")
+
+    with get_session() as session:
+        session.merge(Job(id=req.job_id, mode=req.mode, audio_path=req.audio_path, status="pending"))
 
     if req.mode == "autopilot":
         task = run_autopilot.delay(req.job_id, req.audio_path)
-    elif req.mode == "chat":
-        task = run_transcribe_only.delay(req.job_id, req.audio_path)
     else:
-        raise HTTPException(400, "mode must be 'autopilot' or 'chat'")
+        task = run_transcribe_only.delay(req.job_id, req.audio_path)
 
     return {"job_id": req.job_id, "task_id": task.id, "mode": req.mode}
 

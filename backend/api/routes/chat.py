@@ -1,19 +1,22 @@
 """
 Chat endpoint — conversational EDL editing.
 
-Chat turns are fast enough to run synchronously in the API process
-(only LLM calls + JSON manipulation; no audio rendering happens here).
+Each turn is relayed to the real RocketRide engine (see
+nodes/chat_editor_node.py and .rocketride/chat_editor.pipe). The agent
+mutates the EDL itself via HTTP tool calls back into
+/api/internal/tools/*, so this route re-reads the EDL from Postgres after
+the turn completes rather than receiving it back from the node.
 """
 
 from __future__ import annotations
-import json
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from nodes.chat_editor_node import ChatEditorNode
 from workers.tasks import load_state
+from db.session import get_session
+from db.models import Job, ChatTurn
 
 router = APIRouter()
 
@@ -33,27 +36,35 @@ class ChatRequest(BaseModel):
 
 
 @router.post("/chat/{job_id}")
-def chat(job_id: str, req: ChatRequest):
+async def chat(job_id: str, req: ChatRequest):
     transcript = load_state(job_id, "transcript")
-    edl = load_state(job_id, "edl")
-    if transcript is None or edl is None:
+    if transcript is None:
         raise HTTPException(404, "Job not ready — transcription must finish first")
 
-    result = _node().execute(
+    result = await _node().execute(
         {
-            "transcript": transcript,
-            "edl": edl,
+            "job_id": job_id,
             "user_message": req.message,
             "chat_history": req.chat_history,
         }
     )
+    assistant_message = result["assistant_message"]
 
-    # Persist updated EDL
-    edl_path = Path("tmp/jobs") / job_id / "edl.json"
-    edl_path.write_text(json.dumps(result["edl"]))
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        if job is None:
+            raise HTTPException(404, "Job not found")
+        edl = job.edl
+        session.add(ChatTurn(job_id=job_id, role="user", content=req.message))
+        session.add(ChatTurn(job_id=job_id, role="assistant", content=assistant_message))
+
+    new_history = req.chat_history + [
+        {"role": "user", "content": req.message},
+        {"role": "assistant", "content": assistant_message},
+    ]
 
     return {
-        "assistant_message": result["assistant_message"],
-        "edl": result["edl"],
-        "chat_history": result["chat_history"],
+        "assistant_message": assistant_message,
+        "edl": edl,
+        "chat_history": new_history,
     }

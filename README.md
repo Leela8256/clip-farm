@@ -7,7 +7,7 @@ An end-to-end AI podcast audio editing application built on RocketRide's pipelin
 Upload a raw podcast recording and either:
 
 1. **Auto-pilot mode** — the pipeline automatically transcribes, trims silence/fillers, reduces noise, normalises loudness, and adds your intro/outro. One click, broadcast-ready output.
-2. **Chat editing mode** — talk to a Claude-powered agent in plain English ("cut the part where I stumbled around 12 minutes in", "remove the tangent about X"). The agent edits a non-destructive Edit Decision List and renders only when you're happy.
+2. **Chat editing mode** — talk to a RocketRide-native agent in plain English ("cut the part where I stumbled around 12 minutes in", "remove the tangent about X"). The agent edits a non-destructive Edit Decision List and renders only when you're happy.
 
 ## Stack
 
@@ -16,21 +16,29 @@ Upload a raw podcast recording and either:
 | Frontend | Next.js 14, Tailwind CSS, shadcn/ui |
 | API | FastAPI (Python 3.11+) |
 | Task queue | Celery + Redis |
+| Job/chat state | Postgres |
 | Transcription | faster-whisper (local, CPU/GPU) |
 | Noise reduction | noisereduce + Spotify Pedalboard |
 | Loudness mastering | ffmpeg-normalize (EBU R128, podcast preset) |
 | Audio editing | pydub + ffmpeg |
-| Chat agent | Claude claude-sonnet-4-6 via Anthropic API |
-| Pipeline nodes | RocketRide Python-extensible nodes |
+| Chat agent | `agent_rocketride` (Claude claude-sonnet-4-6) running on the RocketRide engine |
+| Audio pipeline nodes | Plain Python classes orchestrated by Celery (not RocketRide engine nodes — see `docs/ARCHITECTURE.md`) |
+
+The audio pipeline (transcribe → clean → render → master → brand-merge) runs on Celery, not the
+RocketRide engine — that model fits its long-running, stateful, human-in-the-loop shape better than
+RocketRide's streaming-filter node contract. The chat-editing agent runs on the real RocketRide engine
+instead, since conversational Q&A is exactly what it's built for. See `docs/ARCHITECTURE.md` for the
+full rationale.
 
 ## Project structure
 
 ```
 rocketride-podcasts/
 ├── backend/
-│   ├── api/              # FastAPI routes
-│   ├── nodes/            # RocketRide custom pipeline nodes
+│   ├── api/              # FastAPI routes (incl. internal_tools.py for the chat agent)
+│   ├── nodes/            # Audio pipeline node classes + the RocketRide-driving chat_editor_node
 │   ├── workers/          # Celery task definitions
+│   ├── db/               # Postgres models (Job, ChatTurn) + session
 │   └── utils/            # Audio DSP helpers (crossfade, EDL, mastering)
 ├── frontend/
 │   ├── app/              # Next.js App Router pages
@@ -39,10 +47,10 @@ rocketride-podcasts/
 ├── assets/
 │   ├── intro/            # Drop your intro.mp3 here
 │   └── outro/            # Drop your outro.mp3 here
-├── docs/                 # Architecture and node documentation
-├── .rocketride/          # RocketRide pipeline definitions (*.pipe)
+├── docs/                 # Architecture docs + celery_pipeline.json (non-executable reference)
+├── .rocketride/          # chat_editor.pipe — the one real RocketRide pipeline this app runs
 ├── AGENTS.md             # Claude Code bootstrap — read this first
-└── docker-compose.yml    # Redis + optional containerised run
+└── docker-compose.yml    # Redis + Postgres for local dev
 ```
 
 ## Quick start
@@ -51,10 +59,11 @@ rocketride-podcasts/
 
 - Python 3.11+
 - Node.js 20+
-- Redis (local or Docker)
+- Redis + Postgres (local or Docker)
 - ffmpeg installed (`brew install ffmpeg` / `apt install ffmpeg`)
-- Anthropic API key
-- RocketRide VS Code extension installed
+- RocketRide VS Code extension installed, with the RocketRide engine running locally
+  (this app connects to it for chat-editing — see `.rocketride/chat_editor.pipe`)
+- Anthropic API key (used by the `llm_anthropic` node inside `chat_editor.pipe`)
 
 ### 1. Clone and install
 
@@ -76,15 +85,18 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Edit .env — add your ANTHROPIC_API_KEY at minimum
+# Edit .env — add ROCKETRIDE_APIKEY and ROCKETRIDE_ANTHROPIC_KEY at minimum
+# (ROCKETRIDE_URI/APIKEY are auto-populated by the RocketRide VS Code extension
+# when the engine is running locally)
 ```
 
-### 4. Start Redis
+### 4. Start Redis and Postgres
 
 ```bash
-docker-compose up redis -d
-# OR if Redis is installed locally:
+docker-compose up redis postgres -d
+# OR if installed locally:
 redis-server
+pg_ctl start   # or your platform's Postgres start command
 ```
 
 ### 5. Start the Celery worker
@@ -114,18 +126,28 @@ npm run dev
 
 Drop your `intro.mp3` and `outro.mp3` into `assets/intro/` and `assets/outro/` respectively. The pipeline will automatically stitch them.
 
-## RocketRide pipeline nodes
+## Audio pipeline nodes (Celery-orchestrated)
 
-Open `rocketride-podcasts.pipe` in VS Code with the RocketRide extension to view the visual pipeline. Custom nodes are in `backend/nodes/` and follow the RocketRide Python-extensible node contract.
+These are plain Python classes in `backend/nodes/`, chained by Celery tasks in `backend/workers/tasks.py`.
+`docs/celery_pipeline.json` documents the wiring for reference — it is not a RocketRide `.pipe` file and
+is not executed by the RocketRide engine.
 
 | Node | File | Purpose |
 |---|---|---|
 | `TranscriptionNode` | `nodes/transcription_node.py` | faster-whisper, word-level timestamps |
 | `AutoCleanupNode` | `nodes/auto_cleanup_node.py` | Silence/filler detection, auto EDL |
-| `ChatEditorNode` | `nodes/chat_editor_node.py` | Claude agent, conversational EDL editing |
 | `AudioDSPNode` | `nodes/audio_dsp_node.py` | Crossfade, zero-crossing cuts, pydub rendering |
 | `MasteringNode` | `nodes/mastering_node.py` | noisereduce + Pedalboard + ffmpeg-normalize |
 | `BrandMergeNode` | `nodes/brand_merge_node.py` | Intro/outro stitching |
+
+## Chat-editing agent (real RocketRide pipeline)
+
+Open `.rocketride/chat_editor.pipe` in VS Code with the RocketRide extension to view the visual
+pipeline: `chat` source → `agent_rocketride` (wired to `llm_anthropic`, `memory_internal`, and
+`tool_http_request`) → `response_answers`. `backend/nodes/chat_editor_node.py` starts this pipeline via
+the `rocketride` Python SDK and relays each chat turn to it. The agent never holds transcript/EDL state
+itself — it calls back into `/api/internal/tools/*` (`backend/api/routes/internal_tools.py`), which reads
+and mutates the same Postgres-backed EDL the render pipeline uses.
 
 ## Auphonic (optional upgrade)
 

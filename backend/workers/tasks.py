@@ -6,13 +6,21 @@ Two entry points:
 - run_transcribe_only: transcription for chat-editing mode (user edits EDL interactively,
   then calls render_and_finish when done)
 - render_and_finish: render current EDL -> master -> brand merge
+
+Job state (transcript, EDL, status, result) lives in Postgres, not the
+filesystem — see backend/db/. Progress is also pushed live over the
+RocketRide DAP WebSocket channel (see workers/events.py) so the frontend
+can subscribe instead of polling Celery's own status endpoint.
 """
 
 from __future__ import annotations
-import json
-from pathlib import Path
+
+from sqlalchemy import select
 
 from workers.celery_app import celery_app
+from workers.events import publish_stage, publish_terminal
+from db.session import get_session
+from db.models import Job
 from nodes.transcription_node import TranscriptionNode
 from nodes.auto_cleanup_node import AutoCleanupNode
 from nodes.audio_dsp_node import AudioDSPNode
@@ -20,31 +28,42 @@ from nodes.mastering_node import MasteringNode
 from nodes.brand_merge_node import BrandMergeNode
 
 
-def _job_dir(job_id: str) -> Path:
-    d = Path("tmp/jobs") / job_id
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+def _set_stage(job_id: str, stage: str, celery_task) -> None:
+    celery_task.update_state(state="PROGRESS", meta={"stage": stage})
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        if job:
+            job.status = "running"
+            job.stage = stage
+    publish_stage(job_id, stage)
 
 
-def _save_state(job_id: str, key: str, data: dict | str):
-    path = _job_dir(job_id) / f"{key}.json"
-    path.write_text(json.dumps(data) if isinstance(data, dict) else data)
+def _set_field(job_id: str, **fields) -> None:
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        if job:
+            for key, value in fields.items():
+                setattr(job, key, value)
 
 
-def load_state(job_id: str, key: str) -> dict | None:
-    path = _job_dir(job_id) / f"{key}.json"
-    if not path.exists():
-        return None
-    return json.loads(path.read_text())
+def load_state(job_id: str, key: str) -> dict | str | None:
+    """Read a single field of job state. Mirrors the old file-based API."""
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        if job is None:
+            return None
+        if key == "result":
+            return {"final_file": job.final_file} if job.final_file else None
+        return getattr(job, key, None)
 
 
 @celery_app.task(bind=True)
 def run_transcribe_only(self, job_id: str, audio_path: str) -> dict:
     """Transcribe for chat-editing mode. EDL starts empty."""
-    self.update_state(state="PROGRESS", meta={"stage": "transcribing"})
+    _set_stage(job_id, "transcribing", self)
 
     transcript = TranscriptionNode().execute({"audio_path": audio_path})["transcript"]
-    _save_state(job_id, "transcript", transcript)
+    _set_field(job_id, transcript=transcript)
 
     from utils.dsp import load_audio
     from utils.edl import EditDecisionList
@@ -53,34 +72,36 @@ def run_transcribe_only(self, job_id: str, audio_path: str) -> dict:
     edl = EditDecisionList(
         job_id=job_id, source_file=audio_path, total_duration_ms=len(audio)
     )
-    _save_state(job_id, "edl", edl.to_dict())
+    _set_field(job_id, edl=edl.to_dict())
 
+    publish_terminal(job_id, "ready_for_editing")
     return {"stage": "ready_for_editing", "transcript_segments": len(transcript["segments"])}
 
 
 @celery_app.task(bind=True)
 def run_autopilot(self, job_id: str, audio_path: str) -> dict:
     """Full automatic pipeline, end to end."""
-    self.update_state(state="PROGRESS", meta={"stage": "transcribing"})
+    _set_stage(job_id, "transcribing", self)
     transcript = TranscriptionNode().execute({"audio_path": audio_path})["transcript"]
-    _save_state(job_id, "transcript", transcript)
+    _set_field(job_id, transcript=transcript)
 
-    self.update_state(state="PROGRESS", meta={"stage": "auto_cleanup"})
+    _set_stage(job_id, "auto_cleanup", self)
     edl = AutoCleanupNode().execute(
         {"audio_path": audio_path, "transcript": transcript, "job_id": job_id}
     )["edl"]
-    _save_state(job_id, "edl", edl)
+    _set_field(job_id, edl=edl)
 
-    self.update_state(state="PROGRESS", meta={"stage": "rendering"})
+    _set_stage(job_id, "rendering", self)
     rendered = AudioDSPNode().execute({"edl": edl})["rendered_wav"]
 
-    self.update_state(state="PROGRESS", meta={"stage": "mastering"})
+    _set_stage(job_id, "mastering", self)
     mastered = MasteringNode().execute({"rendered_wav": rendered})["mastered_file"]
 
-    self.update_state(state="PROGRESS", meta={"stage": "brand_merge"})
+    _set_stage(job_id, "brand_merge", self)
     final = BrandMergeNode().execute({"mastered_file": mastered})["final_file"]
 
-    _save_state(job_id, "result", {"final_file": final})
+    _set_field(job_id, final_file=final, status="done", stage="done")
+    publish_terminal(job_id, "done", final_file=final)
     return {"stage": "done", "final_file": final}
 
 
@@ -91,14 +112,15 @@ def render_and_finish(self, job_id: str) -> dict:
     if edl is None:
         raise ValueError(f"No EDL found for job {job_id}")
 
-    self.update_state(state="PROGRESS", meta={"stage": "rendering"})
+    _set_stage(job_id, "rendering", self)
     rendered = AudioDSPNode().execute({"edl": edl})["rendered_wav"]
 
-    self.update_state(state="PROGRESS", meta={"stage": "mastering"})
+    _set_stage(job_id, "mastering", self)
     mastered = MasteringNode().execute({"rendered_wav": rendered})["mastered_file"]
 
-    self.update_state(state="PROGRESS", meta={"stage": "brand_merge"})
+    _set_stage(job_id, "brand_merge", self)
     final = BrandMergeNode().execute({"mastered_file": mastered})["final_file"]
 
-    _save_state(job_id, "result", {"final_file": final})
+    _set_field(job_id, final_file=final, status="done", stage="done")
+    publish_terminal(job_id, "done", final_file=final)
     return {"stage": "done", "final_file": final}

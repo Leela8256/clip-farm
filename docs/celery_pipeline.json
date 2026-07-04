@@ -1,7 +1,7 @@
 {
   "name": "podcast_autopilot_pipeline",
   "version": "0.1.0",
-  "description": "End-to-end podcast editing: transcribe -> auto-clean -> render -> master -> brand merge. Open in VS Code with the RocketRide extension to view on the visual canvas.",
+  "description": "Architecture reference for the auto-pilot audio pipeline: transcribe -> auto-clean -> render -> master -> brand merge. This is executed by Celery tasks (backend/workers/tasks.py) calling these Python node classes directly — it is NOT a RocketRide .pipe file and is not executed by the RocketRide engine. For the real RocketRide-engine pipeline (chat-editing), see .rocketride/chat_editor.pipe.",
   "source": {
     "type": "webhook",
     "id": "source_upload",

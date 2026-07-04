@@ -7,6 +7,10 @@ python-multipart==0.0.9
 celery[redis]==5.4.0
 redis==5.0.8
 
+# Database
+sqlalchemy==2.0.35
+psycopg[binary]==3.2.2
+
 # Transcription
 faster-whisper==1.0.3
 
@@ -25,8 +29,9 @@ pedalboard==0.9.13
 # Loudness normalisation
 ffmpeg-normalize==1.28.0
 
-# AI agent
-anthropic==0.34.2
+# AI agent — chat-editing runs on the RocketRide engine (see
+# .rocketride/chat_editor.pipe + nodes/chat_editor_node.py)
+rocketride>=1.0.0
 
 # Utilities
 python-dotenv==1.0.1
