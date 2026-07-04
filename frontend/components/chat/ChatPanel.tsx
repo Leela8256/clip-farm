@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { Loader2, SendHorizonal } from "lucide-react";
 import type { ChatMessage as Msg } from "@/lib/types";
+import ChatMessage from "@/components/chat/ChatMessage";
 
 export default function ChatPanel({
   history,
@@ -52,7 +53,7 @@ export default function ChatPanel({
           </div>
         )}
         {history.map((m, i) => (
-          <ChatBubble key={i} msg={m} />
+          <ChatMessage key={i} msg={m} />
         ))}
         {busy && (
           <div className="flex items-center gap-2 text-xs text-ink-faint">
@@ -88,17 +89,3 @@ export default function ChatPanel({
   );
 }
 
-function ChatBubble({ msg }: { msg: Msg }) {
-  const isUser = msg.role === "user";
-  return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`max-w-[85%] whitespace-pre-wrap rounded-xl px-3 py-2 text-sm leading-relaxed ${
-          isUser ? "bg-accent/15 text-ink" : "bg-surface-overlay text-ink"
-        }`}
-      >
-        {msg.content}
-      </div>
-    </div>
-  );
-}

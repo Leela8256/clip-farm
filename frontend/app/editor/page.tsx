@@ -7,6 +7,7 @@ import { api, watchJob } from "@/lib/api";
 import type { Transcript, Edl, ChatMessage, Mode, JobEvent } from "@/lib/types";
 import TranscriptEditor from "@/components/editor/TranscriptEditor";
 import EdlPanel from "@/components/editor/EdlPanel";
+import WaveformPlayer from "@/components/editor/WaveformPlayer";
 import ChatPanel from "@/components/chat/ChatPanel";
 
 const STAGE_LABELS: Record<string, string> = {
@@ -132,7 +133,7 @@ function EditorPage() {
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px]">
       <div className="space-y-6">
-        <audio controls src={api.previewUrl(jobId)} className="w-full" />
+        <WaveformPlayer src={api.previewUrl(jobId)} edl={edl} />
         {transcript && edl && (
           <TranscriptEditor transcript={transcript} edl={edl} />
         )}

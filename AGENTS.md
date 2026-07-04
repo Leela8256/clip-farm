@@ -53,9 +53,13 @@ job state for no benefit. RocketRide is used where it fits natively instead: the
 - File uploads are stored in `tmp/uploads/`. Processed outputs go to `tmp/outputs/`.
 
 ### Frontend
-- Use shadcn/ui components. Do not introduce other UI libraries.
+- The UI uses a hand-rolled Tailwind design system (see `tailwind.config.ts`: dark theme,
+  warm `accent`, semantic `cut`/`keep` colors). Build new components in that same style and reuse
+  those tokens. Do not introduce shadcn/ui or another component library — none is in use, and mixing
+  systems would fragment the visual language. `frontend/components/ui/` is reserved but currently empty.
 - API calls go through `frontend/lib/api.ts` — never call fetch directly in components.
 - The transcript editor must render word-level timestamps from the transcription response.
+- Job status comes from the WebSocket (`watchJob` in `lib/api.ts`), not polling.
 - Chat history is persisted to Postgres (`chat_turns` table), not just React state.
 
 ### Environment
