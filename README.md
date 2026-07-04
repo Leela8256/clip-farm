@@ -55,76 +55,66 @@ rocketride-podcasts/
 
 ## Quick start
 
+The backend (API + Celery worker + Redis + Postgres) runs in Docker — the
+pinned scientific packages (faster-whisper, pedalboard, noisereduce) want
+Python 3.11, and containers avoid host-interpreter drift. The frontend runs
+natively via `npm`.
+
 ### Prerequisites
 
-- Python 3.11+
-- Node.js 20+
-- Redis + Postgres (local or Docker)
-- ffmpeg installed (`brew install ffmpeg` / `apt install ffmpeg`)
+- Docker + Docker Compose
+- Node.js 20+ and `ffmpeg` on the host (for the frontend / local tinkering)
 - RocketRide VS Code extension installed, with the RocketRide engine running locally
-  (this app connects to it for chat-editing — see `.rocketride/chat_editor.pipe`)
-- Anthropic API key (used by the `llm_anthropic` node inside `chat_editor.pipe`)
+  (the app connects to it for chat-editing — see `.rocketride/chat_editor.pipe`)
+- An Anthropic API key with credit (used by the `llm_anthropic` node inside `chat_editor.pipe`)
 
-### 1. Clone and install
+### 1. Clone and configure
 
 ```bash
 git clone <your-repo>
 cd rocketride-podcasts
-```
-
-### 2. Backend setup
-
-```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-### 3. Environment variables
-
-```bash
 cp .env.example .env
-# Edit .env — add ROCKETRIDE_APIKEY and ROCKETRIDE_ANTHROPIC_KEY at minimum
-# (ROCKETRIDE_URI/APIKEY are auto-populated by the RocketRide VS Code extension
-# when the engine is running locally)
+# Edit .env — set ROCKETRIDE_APIKEY and ROCKETRIDE_ANTHROPIC_KEY.
+# ROCKETRIDE_URI defaults to the local engine; the api/worker containers
+# override it to host.docker.internal automatically (see docker-compose.yml).
 ```
 
-### 4. Start Redis and Postgres
+> **Ports:** compose maps Redis to host `6380` and Postgres to `5433` (not the
+> defaults 6379/5432) to avoid colliding with other local projects. Container-to-
+> container traffic still uses the standard internal ports.
+
+### 2. Start the backend stack
 
 ```bash
-docker-compose up redis postgres -d
-# OR if installed locally:
-redis-server
-pg_ctl start   # or your platform's Postgres start command
+docker compose up -d --build
+# Brings up: redis, postgres, api (:8000), worker
+docker compose ps                     # all should be Up / healthy
+curl localhost:8000/api/health        # {"status":"ok"}
 ```
 
-### 5. Start the Celery worker
+On first run the worker downloads the faster-whisper `medium` model
+(~1.5 GB) the first time a job transcribes — subsequent runs are cached.
 
-```bash
-cd backend
-celery -A workers.celery_app worker --loglevel=info
-```
-
-### 6. Start the FastAPI server
-
-```bash
-cd backend
-uvicorn api.main:app --reload --port 8000
-```
-
-### 7. Start the frontend
+### 3. Start the frontend
 
 ```bash
 cd frontend
 npm install
 npm run dev
-# Open http://localhost:3000
+# Open http://localhost:3000  (proxies /api and /ws to the backend on :8000)
 ```
 
-### 8. Add your brand assets
+### 4. Add your brand assets (optional)
 
-Drop your `intro.mp3` and `outro.mp3` into `assets/intro/` and `assets/outro/` respectively. The pipeline will automatically stitch them.
+Drop `intro.mp3` / `outro.mp3` into `assets/intro/` and `assets/outro/`. If
+present, the pipeline crossfades them onto the episode and re-normalizes the
+mix to spec; if absent, it skips them without erroring.
+
+### 5. Run the tests
+
+```bash
+docker compose run --rm api pytest tests/
+```
 
 ## Audio pipeline nodes (Celery-orchestrated)
 
