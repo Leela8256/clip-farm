@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #08080A; }
+  ::selection { background: #6E8BFF; color: #08080A; }
+  .rr-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+  .rr-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 999px; border: 3px solid #08080A; }
+  @keyframes rrPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  @keyframes rrFade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+</style>
+</helmet>
+
+<div style="height: 100vh; display: flex; background: #08080A; color: #F4F4F6; font-family: 'Manrope', sans-serif; overflow: hidden;">
+
+  <!-- LEFT RAIL -->
+  <nav style="width: 64px; flex: 0 0 64px; border-right: 1px solid rgba(255,255,255,0.08); background: #0A0A0C; display: flex; flex-direction: column; align-items: center; padding: 18px 0; gap: 8px;">
+    <div style="width: 34px; height: 34px; border-radius: 9px; background: #F4F4F6; color: #08080A; display: flex; align-items: center; justify-content: center; font-family: 'Space Grotesk'; font-weight: 700; font-size: 17px; margin-bottom: 14px;">R</div>
+    <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(255,255,255,0.06); display: flex; align-items: center; justify-content: center; color: #F4F4F6; font-family: 'IBM Plex Mono'; font-size: 15px;">☰</div>
+    <div style="width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #6E6E77; font-family: 'IBM Plex Mono'; font-size: 17px;">＋</div>
+    <div style="width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #6E6E77; font-family: 'IBM Plex Mono'; font-size: 15px;">≡</div>
+    <div style="margin-top: auto; width: 32px; height: 32px; border-radius: 999px; background: linear-gradient(135deg,#6E8BFF,#4FBF8F);"></div>
+  </nav>
+
+  <!-- MAIN -->
+  <div style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column;">
+
+    <!-- TOPBAR -->
+    <header style="height: 60px; flex: 0 0 60px; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; align-items: center; justify-content: space-between; padding: 0 24px; gap: 16px;">
+      <div style="display: flex; align-items: center; gap: 12px; min-width: 0;">
+        <span style="font-family: 'Space Grotesk'; font-weight: 600; font-size: 16px; letter-spacing: -0.01em; white-space: nowrap;">Ep. 042 — Scaling Audio Pipelines</span>
+        <span style="font-family: 'IBM Plex Mono'; font-size: 11px; color: #6E6E77;">48:12 · 1 track</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; padding: 4px;">
+        <button onClick="{{ goUpload }}" style="border: none; cursor: pointer; font-family: 'Manrope'; font-weight: 600; font-size: 12.5px; padding: 7px 14px; border-radius: 999px; background: {{ uploadBg }}; color: {{ uploadFg }};">Upload</button>
+        <button onClick="{{ goAuto }}" style="border: none; cursor: pointer; font-family: 'Manrope'; font-weight: 600; font-size: 12.5px; padding: 7px 14px; border-radius: 999px; background: {{ autoBg }}; color: {{ autoFg }};">Auto-pilot</button>
+        <button onClick="{{ goEditor }}" style="border: none; cursor: pointer; font-family: 'Manrope'; font-weight: 600; font-size: 12.5px; padding: 7px 14px; border-radius: 999px; background: {{ editorBg }}; color: {{ editorFg }};">Chat editor</button>
+      </div>
+    </header>
+
+    <!-- ============ SCREEN: UPLOAD ============ -->
+    <sc-if value="{{ isUpload }}" hint-placeholder-val="{{ false }}">
+      <main class="rr-scroll" style="flex: 1; overflow-y: auto; padding: 48px 40px; animation: rrFade 0.25s ease;">
+        <div style="max-width: 860px; margin: 0 auto;">
+          <div style="font-family: 'IBM Plex Mono'; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77;">New episode</div>
+          <h1 style="font-family: 'Space Grotesk'; font-weight: 700; font-size: 34px; letter-spacing: -0.02em; margin: 12px 0 0;">Drop a raw recording.</h1>
+          <p style="color: #A6A6AE; font-size: 15px; margin: 10px 0 0;">We'll transcribe, clean, master to spec, and merge your intro/outro. One click — or edit it in conversation.</p>
+
+          <div style="margin-top: 28px; border: 1.5px dashed rgba(255,255,255,0.16); border-radius: 18px; background: #0C0C0F; padding: 44px; text-align: center;">
+            <div style="display: flex; align-items: center; justify-content: center; gap: 2px; height: 56px; margin-bottom: 20px; opacity: 0.5;">
+              <sc-for list="{{ dropBars }}" as="b" hint-placeholder-count="60">
+                <div style="flex: 1 1 auto; max-width: 4px; border-radius: 2px; background: rgba(255,255,255,0.28); height: {{ b }};"></div>
+              </sc-for>
+            </div>
+            <div style="font-family: 'Space Grotesk'; font-weight: 600; font-size: 18px;">Drag &amp; drop your .wav or .mp3</div>
+            <div style="font-family: 'IBM Plex Mono'; font-size: 12px; color: #6E6E77; margin-top: 8px;">or browse — up to 4 GB · 24-bit / 48 kHz recommended</div>
+            <button style="margin-top: 22px; background: #F4F4F6; color: #08080A; border: none; font-family: 'Manrope'; font-weight: 600; font-size: 13.5px; padding: 11px 20px; border-radius: 9px; cursor: pointer;">Choose file</button>
+          </div>
+
+          <div style="font-family: 'IBM Plex Mono'; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77; margin: 36px 0 14px;">Then</div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+            <div style="background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 24px; box-shadow: 0 0 0 1px rgba(110,139,255,0.14), 0 8px 40px -14px rgba(110,139,255,0.3);">
+              <div style="display: flex; align-items: center; justify-content: space-between;"><span style="font-family: 'Space Grotesk'; font-weight: 600; font-size: 17px;">Auto-pilot</span><span style="font-family: 'IBM Plex Mono'; font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: #6E8BFF; border: 1px solid rgba(110,139,255,0.4); border-radius: 999px; padding: 3px 8px;">1 click</span></div>
+              <p style="color: #A6A6AE; font-size: 13.5px; line-height: 1.55; margin: 12px 0 18px;">Transcribe → trim silence &amp; fillers → reduce noise → master to −16 LUFS → stitch intro/outro. Broadcast-ready output, hands-off.</p>
+              <button onClick="{{ goAuto }}" style="width: 100%; background: #F4F4F6; color: #08080A; border: none; font-family: 'Manrope'; font-weight: 600; font-size: 13.5px; padding: 11px; border-radius: 9px; cursor: pointer;">Make it broadcast-ready</button>
+            </div>
+            <div style="background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 24px;">
+              <div style="display: flex; align-items: center; justify-content: space-between;"><span style="font-family: 'Space Grotesk'; font-weight: 600; font-size: 17px;">Chat editing</span><span style="font-family: 'IBM Plex Mono'; font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: #6E6E77; border: 1px solid rgba(255,255,255,0.16); border-radius: 999px; padding: 3px 8px;">agent</span></div>
+              <p style="color: #A6A6AE; font-size: 13.5px; line-height: 1.55; margin: 12px 0 18px;">Talk to a RocketRide-native agent in plain English. It edits a non-destructive EDL and renders only when you're happy.</p>
+              <button onClick="{{ goEditor }}" style="width: 100%; background: transparent; color: #F4F4F6; border: 1px solid rgba(255,255,255,0.16); font-family: 'Manrope'; font-weight: 600; font-size: 13.5px; padding: 11px; border-radius: 9px; cursor: pointer;">Open chat editor</button>
+            </div>
+          </div>
+
+          <div style="font-family: 'IBM Plex Mono'; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77; margin: 36px 0 14px;">Loudness target</div>
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <sc-for list="{{ targets }}" as="t" hint-placeholder-count="3">
+              <button onClick="{{ t.onClick }}" style="cursor: pointer; text-align: left; background: {{ t.bg }}; border: 1px solid {{ t.border }}; border-radius: 12px; padding: 14px 18px; min-width: 180px;">
+                <div style="font-family: 'Manrope'; font-weight: 600; font-size: 14px; color: {{ t.name_fg }};">{{ t.name }}</div>
+                <div style="font-family: 'IBM Plex Mono'; font-size: 12px; color: #A6A6AE; margin-top: 4px;">{{ t.spec }}</div>
+              </button>
+            </sc-for>
+          </div>
+        </div>
+      </main>
+    </sc-if>
+
+    <!-- ============ SCREEN: AUTO-PILOT ============ -->
+    <sc-if value="{{ isAuto }}" hint-placeholder-val="{{ false }}">
+      <main class="rr-scroll" style="flex: 1; overflow-y: auto; padding: 40px; animation: rrFade 0.25s ease;">
+        <div style="max-width: 880px; margin: 0 auto;">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
+            <div>
+              <div style="font-family: 'IBM Plex Mono'; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #E0A34D;">● Processing</div>
+              <h1 style="font-family: 'Space Grotesk'; font-weight: 700; font-size: 30px; letter-spacing: -0.02em; margin: 10px 0 0;">Auto-pilot running</h1>
+            </div>
+            <div style="text-align: right;">
+              <div style="font-family: 'IBM Plex Mono'; font-size: 12px; color: #6E6E77;">Est. remaining</div>
+              <div style="font-family: 'Space Grotesk'; font-weight: 600; font-size: 22px;">~2m 40s</div>
+            </div>
+          </div>
+
+          <div style="margin-top: 26px; background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 24px 28px;">
+            <div style="display: flex; align-items: center; gap: 2px; height: 60px; opacity: 0.85;">
+              <sc-for list="{{ autoBars }}" as="b" hint-placeholder-count="120">
+                <div style="flex: 1 1 auto; border-radius: 1.5px; background: {{ b.color }}; height: {{ b.h }};"></div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="margin-top: 22px; display: grid; grid-template-columns: 1.3fr 1fr; gap: 14px;">
+            <!-- Pipeline stepper -->
+            <div style="background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 22px 24px;">
+              <div style="font-family: 'IBM Plex Mono'; font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77; margin-bottom: 18px;">Celery pipeline</div>
+              <div style="display: flex; flex-direction: column; gap: 2px;">
+                <sc-for list="{{ nodes }}" as="n" hint-placeholder-count="5">
+                  <div style="display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
+                    <span style="width: 22px; height: 22px; flex: 0 0 auto; border-radius: 999px; border: 1.5px solid {{ n.ring }}; background: {{ n.dot }}; color: #08080A; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; animation: {{ n.anim }};">{{ n.mark }}</span>
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="font-family: 'Manrope'; font-weight: 600; font-size: 14px; color: {{ n.name_fg }};">{{ n.name }}</div>
+                      <div style="font-family: 'IBM Plex Mono'; font-size: 11px; color: #6E6E77;">{{ n.file }}</div>
+                    </div>
+                    <span style="font-family: 'IBM Plex Mono'; font-size: 11px; color: {{ n.status_fg }};">{{ n.status }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+
+            <!-- Live log + stats -->
+            <div style="display: flex; flex-direction: column; gap: 14px;">
+              <div style="background: #0C0C0F; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 18px 20px;">
+                <div style="font-family: 'IBM Plex Mono'; font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77; margin-bottom: 12px;">Worker log</div>
+                <div style="display: flex; flex-direction: column; gap: 7px;">
+                  <sc-for list="{{ logs }}" as="l" hint-placeholder-count="5">
+                    <div style="font-family: 'IBM Plex Mono'; font-size: 11.5px; line-height: 1.4; color: {{ l.color }};">{{ l.text }}</div>
+                  </sc-for>
+                </div>
+              </div>
+              <div style="background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 18px 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                <div><div style="font-family: 'IBM Plex Mono'; font-size: 10.5px; color: #6E6E77;">CUTS APPLIED</div><div style="font-family: 'Space Grotesk'; font-weight: 600; font-size: 22px; margin-top: 3px;">37</div></div>
+                <div><div style="font-family: 'IBM Plex Mono'; font-size: 10.5px; color: #6E6E77;">TIME SAVED</div><div style="font-family: 'Space Grotesk'; font-weight: 600; font-size: 22px; margin-top: 3px;">4m 12s</div></div>
+                <div><div style="font-family: 'IBM Plex Mono'; font-size: 10.5px; color: #6E6E77;">TARGET</div><div style="font-family: 'Space Grotesk'; font-weight: 600; font-size: 22px; margin-top: 3px; color: #6E8BFF;">−16 LUFS</div></div>
+                <div><div style="font-family: 'IBM Plex Mono'; font-size: 10.5px; color: #6E6E77;">TRUE PEAK</div><div style="font-family: 'Space Grotesk'; font-weight: 600; font-size: 22px; margin-top: 3px;">−1 dBTP</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </sc-if>
+
+    <!-- ============ SCREEN: CHAT EDITOR ============ -->
+    <sc-if value="{{ isEditor }}" hint-placeholder-val="{{ true }}">
+      <main style="flex: 1; min-height: 0; display: flex; animation: rrFade 0.25s ease;">
+
+        <!-- Timeline + transcript -->
+        <section class="rr-scroll" style="flex: 1 1 auto; min-width: 0; overflow-y: auto; padding: 28px 32px; border-right: 1px solid rgba(255,255,255,0.08);">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
+            <div style="font-family: 'IBM Plex Mono'; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77;">Timeline · non-destructive</div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="font-family: 'IBM Plex Mono'; font-size: 12px; color: #A6A6AE;">{{ playheadTime }} / 48:12</span>
+              <button style="width: 30px; height: 30px; border-radius: 999px; border: none; background: #F4F4F6; color: #08080A; font-size: 12px; cursor: pointer;">▮▮</button>
+            </div>
+          </div>
+
+          <!-- Waveform -->
+          <div style="margin-top: 18px; background: #0C0C0F; border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 22px 20px; position: relative;">
+            <div style="display: flex; align-items: center; gap: 1.5px; height: 92px;">
+              <sc-for list="{{ waveBars }}" as="b" hint-placeholder-count="140">
+                <div style="flex: 1 1 auto; border-radius: 1.5px; background: {{ b.color }}; height: {{ b.h }};"></div>
+              </sc-for>
+            </div>
+            <div style="position: absolute; top: 14px; bottom: 14px; width: 2px; background: #6E8BFF; box-shadow: 0 0 10px 1px rgba(110,139,255,0.7); left: {{ playheadLeft }};"></div>
+          </div>
+
+          <!-- Transcript -->
+          <div style="font-family: 'IBM Plex Mono'; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77; margin: 30px 0 14px;">Transcript</div>
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <sc-for list="{{ transcript }}" as="t" hint-placeholder-count="5">
+              <div style="display: flex; gap: 16px; padding: 12px 14px; border-radius: 10px; background: {{ t.bg }}; border: 1px solid {{ t.border }};">
+                <span style="font-family: 'IBM Plex Mono'; font-size: 12px; color: {{ t.time_fg }}; flex: 0 0 62px; padding-top: 1px;">{{ t.time }}</span>
+                <span style="font-size: 14px; line-height: 1.55; color: {{ t.text_fg }}; text-decoration: {{ t.strike }};">{{ t.text }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </section>
+
+        <!-- Right: EDL + Chat -->
+        <aside style="width: 400px; flex: 0 0 400px; display: flex; flex-direction: column; background: #0A0A0C;">
+          <!-- EDL -->
+          <div style="border-bottom: 1px solid rgba(255,255,255,0.08); padding: 20px 22px; max-height: 40%; overflow-y: auto;" class="rr-scroll">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <span style="font-family: 'IBM Plex Mono'; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77;">Edit decision list</span>
+              <span style="font-family: 'IBM Plex Mono'; font-size: 11px; color: #E0A34D;">{{ edlCount }} edits · unrendered</span>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 14px;">
+              <sc-for list="{{ edl }}" as="e" hint-placeholder-count="4">
+                <div style="display: flex; align-items: center; gap: 12px; background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 11px 13px;">
+                  <span style="width: 7px; height: 7px; border-radius: 999px; flex: 0 0 auto; background: {{ e.dot }};"></span>
+                  <div style="flex: 1; min-width: 0;">
+                    <div style="font-size: 13px; font-weight: 600;">{{ e.label }}</div>
+                    <div style="font-family: 'IBM Plex Mono'; font-size: 11px; color: #6E6E77; margin-top: 2px;">{{ e.range }}</div>
+                  </div>
+                  <span style="font-family: 'IBM Plex Mono'; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em; color: {{ e.tag_fg }}; border: 1px solid {{ e.tag_border }}; border-radius: 999px; padding: 3px 7px;">{{ e.kind }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <!-- Chat -->
+          <div class="rr-scroll" style="flex: 1; min-height: 0; overflow-y: auto; padding: 20px 22px;">
+            <div style="font-family: 'IBM Plex Mono'; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77; margin-bottom: 16px;">agent_rocketride</div>
+            <div style="display: flex; flex-direction: column; gap: 14px;">
+              <sc-for list="{{ messages }}" as="m" hint-placeholder-count="4">
+                <div style="align-self: {{ m.align }}; max-width: 88%;">
+                  <div style="font-family: 'IBM Plex Mono'; font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: #6E6E77; margin-bottom: 5px; text-align: {{ m.labelAlign }};">{{ m.who }}</div>
+                  <div style="font-size: 13.5px; line-height: 1.55; padding: 11px 14px; border-radius: 13px; background: {{ m.bubbleBg }}; color: {{ m.bubbleFg }}; border: 1px solid {{ m.bubbleBorder }};">{{ m.text }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <!-- Composer + render -->
+          <div style="border-top: 1px solid rgba(255,255,255,0.08); padding: 16px 20px;">
+            <div style="display: flex; gap: 8px; align-items: center; background: #16161A; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 6px 6px 6px 14px;">
+              <input type="text" placeholder="Tell the agent what to cut…" value="{{ chatInput }}" onInput="{{ onInput }}" onKeydown="{{ onKey }}" style="flex: 1; background: transparent; border: none; outline: none; color: #F4F4F6; font-family: 'Manrope'; font-size: 13.5px; padding: 6px 0;">
+              <button onClick="{{ onSend }}" style="flex: 0 0 auto; background: #6E8BFF; color: #08080A; border: none; width: 34px; height: 34px; border-radius: 9px; cursor: pointer; font-size: 15px; font-weight: 700;">↑</button>
+            </div>
+            <button onClick="{{ onRender }}" style="width: 100%; margin-top: 10px; background: #F4F4F6; color: #08080A; border: none; font-family: 'Manrope'; font-weight: 600; font-size: 13.5px; padding: 12px; border-radius: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px;">Render master <span style="font-family: 'IBM Plex Mono'; font-size: 11px; opacity: 0.6;">−16 LUFS · −1 dBTP</span></button>
+          </div>
+        </aside>
+      </main>
+    </sc-if>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:800}}">
+class Component extends DCLogic {
+  state = {
+    screen: 'editor',
+    target: 'default',
+    chatInput: '',
+    playheadPct: 34,
+    edl: [
+      { id: 1, label: 'Silence trim', range: '00:03.1 → 00:05.8', kind: 'auto', startPct: 3, endPct: 5 },
+      { id: 2, label: 'Filler "um" removed', range: '02:11.0 → 02:11.6', kind: 'auto', startPct: 15, endPct: 16 },
+      { id: 3, label: 'Stumble cut', range: '11:58.2 → 12:14.0', kind: 'chat', startPct: 40, endPct: 46 },
+      { id: 4, label: 'Sponsor tangent removed', range: '23:40.0 → 25:02.0', kind: 'chat', startPct: 70, endPct: 78 },
+    ],
+    messages: [
+      { id: 1, who: 'you', text: 'cut the part where I stumbled around 12 minutes in' },
+      { id: 2, who: 'agent', text: 'Found a 16s stumble at 11:58–12:14. Added the cut to your EDL — not rendered yet. Want me to tighten the lead-in too?' },
+      { id: 3, who: 'you', text: 'also remove the tangent about the sponsor around 24 min' },
+      { id: 4, who: 'agent', text: "Cut 23:40–25:02 — the sponsor tangent. EDL updated, 1m38s removed. Say 'render' when you're happy." },
+    ],
+  };
+
+  AGENT_REPLIES = [
+    { text: 'Done — cut {r}. EDL updated, not rendered. Anything else?', label: 'Trimmed section', start: 52, end: 56 },
+    { text: 'Removed the dead air at {r}. That tightens the pacing without touching the master.', label: 'Dead air removed', start: 60, end: 62 },
+    { text: 'Cut {r} and applied a 12ms crossfade so the edit is inaudible. Say render when ready.', label: 'Clean cut + crossfade', start: 84, end: 88 },
+  ];
+
+  seg = 0;
+
+  makeBars(count, playheadPct, cuts, playedColor) {
+    const bars = [];
+    for (let i = 0; i < count; i++) {
+      const pct = (i / count) * 100;
+      const base = Math.abs(Math.sin(i * 0.42) * 0.55 + Math.sin(i * 0.13 + 1) * 0.45);
+      const h = Math.max(6, Math.round((0.14 + base * 0.86) * (count > 100 ? 88 : 52)));
+      let color = 'rgba(255,255,255,0.22)';
+      const inCut = cuts && cuts.some(c => pct >= c.startPct && pct <= c.endPct);
+      if (inCut) color = 'rgba(224,98,91,0.5)';
+      else if (playheadPct != null && pct <= playheadPct) color = playedColor;
+      bars.push({ h: h + 'px', color });
+    }
+    return bars;
+  }
+
+  send() {
+    const txt = (this.state.chatInput || '').trim();
+    if (!txt) return;
+    if (/render/i.test(txt)) {
+      this.setState(s => ({
+        chatInput: '',
+        messages: [...s.messages,
+          { id: Date.now(), who: 'you', text: txt },
+          { id: Date.now()+1, who: 'agent', text: 'Rendering the master now — 5 nodes, −16 LUFS / −1 dBTP. Switching you to the pipeline view.' },
+        ],
+        screen: 'auto',
+      }));
+      return;
+    }
+    const r = this.AGENT_REPLIES[this.seg % this.AGENT_REPLIES.length];
+    this.seg++;
+    const range = `${13 + this.seg}:0${this.seg}.0 → ${13 + this.seg}:1${this.seg}.4`;
+    this.setState(s => ({
+      chatInput: '',
+      messages: [...s.messages,
+        { id: Date.now(), who: 'you', text: txt },
+        { id: Date.now()+1, who: 'agent', text: r.text.replace('{r}', range) },
+      ],
+      edl: [...s.edl, { id: Date.now()+2, label: r.label, range, kind: 'chat', startPct: r.start, endPct: r.end }],
+    }));
+  }
+
+  renderVals() {
+    const scr = this.state.screen;
+    const ph = this.state.playheadPct;
+    const active = '#F4F4F6', activeFg = '#08080A', idle = 'transparent', idleFg = '#A6A6AE';
+
+    // Upload targets
+    const T = [
+      { key: 'spotify', name: 'Spotify Podcasts', spec: '−14 LUFS · −1 dBTP' },
+      { key: 'apple', name: 'Apple Podcasts', spec: '−16 LUFS · −1 dBTP' },
+      { key: 'default', name: 'Default (this app)', spec: '−16 LUFS · −1 dBTP' },
+    ];
+    const targets = T.map(t => {
+      const on = t.key === this.state.target;
+      return { ...t,
+        onClick: () => this.setState({ target: t.key }),
+        bg: on ? 'rgba(110,139,255,0.1)' : '#0E0E11',
+        border: on ? '#6E8BFF' : 'rgba(255,255,255,0.08)',
+        name_fg: on ? '#6E8BFF' : '#F4F4F6',
+      };
+    });
+
+    const dropBars = [];
+    for (let i = 0; i < 60; i++) dropBars.push(Math.max(8, Math.round(Math.abs(Math.sin(i*0.6))*44+6)) + 'px');
+
+    // Auto-pilot
+    const autoBars = this.makeBars(120, 58, null, '#6E8BFF');
+    const nodeDefs = [
+      { name: 'TranscriptionNode', file: 'nodes/transcription_node.py', st: 'done' },
+      { name: 'AutoCleanupNode', file: 'nodes/auto_cleanup_node.py', st: 'done' },
+      { name: 'AudioDSPNode', file: 'nodes/audio_dsp_node.py', st: 'running' },
+      { name: 'MasteringNode', file: 'nodes/mastering_node.py', st: 'queued' },
+      { name: 'BrandMergeNode', file: 'nodes/brand_merge_node.py', st: 'queued' },
+    ];
+    const nodes = nodeDefs.map(n => {
+      if (n.st === 'done') return { ...n, mark: '✓', dot: '#4FBF8F', ring: '#4FBF8F', anim: 'none', name_fg: '#F4F4F6', status: 'done', status_fg: '#4FBF8F' };
+      if (n.st === 'running') return { ...n, mark: '', dot: '#E0A34D', ring: '#E0A34D', anim: 'rrPulse 1.4s ease-in-out infinite', name_fg: '#F4F4F6', status: 'running', status_fg: '#E0A34D' };
+      return { ...n, mark: '', dot: 'transparent', ring: 'rgba(255,255,255,0.2)', anim: 'none', name_fg: '#6E6E77', status: 'queued', status_fg: '#6E6E77' };
+    });
+    const logs = [
+      { text: '[cleanup] 37 regions flagged · 4m12s', color: '#6E6E77' },
+      { text: '[dsp] crossfade @ zero-crossing ×37', color: '#6E6E77' },
+      { text: '[dsp] rendering EDL → master.wav', color: '#E0A34D' },
+      { text: '[master] noisereduce + pedalboard…', color: '#A6A6AE' },
+      { text: '[queue] mastering, brand-merge pending', color: '#6E6E77' },
+    ];
+
+    // Editor waveform + transcript
+    const waveBars = this.makeBars(140, ph, this.state.edl, '#6E8BFF');
+    const transcript = [
+      { time: '11:52', text: 'So the thing about long-running audio jobs is you really want them stateful.', cut: false },
+      { time: '11:58', text: "— uh, sorry, let me — the, the thing is, hang on —", cut: true },
+      { time: '12:14', text: 'You want the pipeline to hold the EDL, not the model. That separation is the whole trick.', cut: false },
+      { time: '12:31', text: 'Which is exactly why the chat agent calls back into the internal tools API.', cut: false },
+    ].map(t => t.cut ? {
+      ...t, bg: 'rgba(224,98,91,0.08)', border: 'rgba(224,98,91,0.3)', time_fg: '#E0625B', text_fg: '#8A6360', strike: 'line-through',
+    } : {
+      ...t, bg: 'transparent', border: 'rgba(255,255,255,0.06)', time_fg: '#6E8BFF', text_fg: '#DCDCE0', strike: 'none',
+    });
+
+    const edl = this.state.edl.map(e => e.kind === 'chat' ? {
+      ...e, dot: '#6E8BFF', tag_fg: '#6E8BFF', tag_border: 'rgba(110,139,255,0.4)',
+    } : {
+      ...e, dot: '#4FBF8F', tag_fg: '#4FBF8F', tag_border: 'rgba(79,191,143,0.4)',
+    });
+
+    const messages = this.state.messages.map(m => m.who === 'you' ? {
+      ...m, align: 'flex-end', labelAlign: 'right', bubbleBg: '#F4F4F6', bubbleFg: '#08080A', bubbleBorder: 'transparent',
+    } : {
+      ...m, align: 'flex-start', labelAlign: 'left', bubbleBg: '#16161A', bubbleFg: '#DCDCE0', bubbleBorder: 'rgba(255,255,255,0.08)',
+    });
+
+    const phMin = Math.floor((ph/100)*48);
+    const phSec = Math.floor((((ph/100)*48) % 1) * 60);
+
+    return {
+      isUpload: scr === 'upload', isAuto: scr === 'auto', isEditor: scr === 'editor',
+      uploadBg: scr==='upload'?active:idle, uploadFg: scr==='upload'?activeFg:idleFg,
+      autoBg: scr==='auto'?active:idle, autoFg: scr==='auto'?activeFg:idleFg,
+      editorBg: scr==='editor'?active:idle, editorFg: scr==='editor'?activeFg:idleFg,
+      goUpload: () => this.setState({ screen: 'upload' }),
+      goAuto: () => this.setState({ screen: 'auto' }),
+      goEditor: () => this.setState({ screen: 'editor' }),
+      targets, dropBars, autoBars, nodes, logs, waveBars, transcript, edl, messages,
+      edlCount: this.state.edl.length,
+      playheadLeft: ph + '%',
+      playheadTime: `${String(phMin).padStart(2,'0')}:${String(phSec).padStart(2,'0')}`,
+      chatInput: this.state.chatInput,
+      onInput: (e) => this.setState({ chatInput: e.target.value }),
+      onKey: (e) => { if (e.key === 'Enter') this.send(); },
+      onSend: () => this.send(),
+      onRender: () => this.setState({ screen: 'auto' }),
+    };
+  }
+}
+</script>
+</body>
+</html>

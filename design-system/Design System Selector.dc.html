@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { background: #F4F2EC; }
+  ::selection { background: #1A1917; color: #F4F2EC; }
+  @keyframes drawerIn { from { transform: translateX(24px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+  @keyframes scrimIn { from { opacity: 0; } to { opacity: 1; } }
+</style>
+</helmet>
+
+<div style="min-height: 100vh; background: #F4F2EC; color: #1A1917; font-family: 'IBM Plex Sans', system-ui, sans-serif; display: flex; align-items: stretch;">
+
+  <aside style="width: 320px; flex: 0 0 320px; border-right: 1px solid #E2DED4; padding: 40px 32px; position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; gap: 32px; background: #F4F2EC;">
+    <div>
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #A19B8C;">Internal Tool</div>
+      <h1 style="font-family: 'Newsreader', serif; font-weight: 500; font-size: 34px; line-height: 1.05; margin: 12px 0 0; letter-spacing: -0.01em;">Design System<br>Selector</h1>
+      <p style="font-size: 13.5px; line-height: 1.55; color: #6B6559; margin: 14px 0 0;">Match a product brief to the right house style — then scaffold it. One system per project.</p>
+    </div>
+
+    <div>
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #A19B8C; margin-bottom: 14px;">The Workflow</div>
+      <ol style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 11px; counter-reset: step;">
+        <li style="display: flex; gap: 12px; font-size: 13px; line-height: 1.4; color: #3A362E;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #B4392C; flex: 0 0 auto; width: 16px;">01</span>Read the brief — product, audience, register</li>
+        <li style="display: flex; gap: 12px; font-size: 13px; line-height: 1.4; color: #3A362E;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #B4392C; flex: 0 0 auto; width: 16px;">02</span>Shortlist three from the menu</li>
+        <li style="display: flex; gap: 12px; font-size: 13px; line-height: 1.4; color: #3A362E;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #B4392C; flex: 0 0 auto; width: 16px;">03</span>Recommend one, clearly</li>
+        <li style="display: flex; gap: 12px; font-size: 13px; line-height: 1.4; color: #3A362E;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #B4392C; flex: 0 0 auto; width: 16px;">04</span>Fetch its DESIGN.md &amp; attach</li>
+        <li style="display: flex; gap: 12px; font-size: 13px; line-height: 1.4; color: #3A362E;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #B4392C; flex: 0 0 auto; width: 16px;">05</span>Scaffold tokens, previews, UI kit, skill</li>
+      </ol>
+    </div>
+
+    <div style="margin-top: auto; padding-top: 24px; border-top: 1px solid #E2DED4;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #A19B8C;">Menu size</div>
+      <div style="font-family: 'Newsreader', serif; font-size: 26px; margin-top: 4px;">{{ total }} systems · 9 categories</div>
+    </div>
+  </aside>
+
+  <main style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column;">
+    <div style="position: sticky; top: 0; z-index: 5; background: rgba(244,242,236,0.88); backdrop-filter: blur(10px); border-bottom: 1px solid #E2DED4; padding: 22px 40px;">
+      <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+        <div style="position: relative; flex: 1 1 320px; min-width: 240px;">
+          <span style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: #A19B8C; font-size: 14px;">⌕</span>
+          <input type="text" placeholder="Search by name, use case, or vibe…" onInput="{{ onSearch }}" style="width: 100%; padding: 11px 14px 11px 34px; border: 1px solid #DAD5C9; border-radius: 10px; background: #FBFAF6; font-family: 'IBM Plex Sans', sans-serif; font-size: 14px; color: #1A1917; outline: none;" style-focus="border-color: #1A1917; background: #FFFFFF;">
+        </div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #6B6559; white-space: nowrap;">{{ count }} shown</div>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px;">
+        <sc-for list="{{ cats }}" as="c" hint-placeholder-count="10">
+          <button onClick="{{ c.onClick }}" style="border: 1px solid {{ c.border }}; background: {{ c.bg }}; color: {{ c.fg }}; font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; letter-spacing: 0.02em; padding: 7px 12px; border-radius: 999px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; transition: all 0.14s ease;">{{ c.name }} <span style="opacity: 0.55;">{{ c.count }}</span></button>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="padding: 32px 40px 80px; flex: 1;">
+      <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(288px, 1fr)); gap: 16px;">
+        <sc-for list="{{ filtered }}" as="sys" hint-placeholder-count="9">
+          <button onClick="{{ sys.onSelect }}" style="text-align: left; cursor: pointer; border: 1px solid #E2DED4; background: #FBFAF6; border-radius: 14px; padding: {{ cardPad }}; display: flex; flex-direction: column; gap: 12px; font-family: inherit; transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease; position: relative; overflow: hidden;" style-hover="border-color: #1A1917; transform: translateY(-2px); box-shadow: 0 10px 30px -18px rgba(26,25,23,0.5);">
+            <div style="position: absolute; top: 0; left: 0; right: 0; height: 3px; background: {{ sys.accent }};"></div>
+            <div style="display: flex; align-items: center; gap: 11px;">
+              <div style="width: 34px; height: 34px; border-radius: 9px; background: {{ sys.accentBg }}; color: {{ sys.accent }}; display: flex; align-items: center; justify-content: center; font-family: 'Newsreader', serif; font-size: 19px; font-weight: 500; flex: 0 0 auto;">{{ sys.letter }}</div>
+              <div style="min-width: 0;">
+                <div style="font-family: 'Newsreader', serif; font-size: 20px; font-weight: 500; line-height: 1.1; letter-spacing: -0.01em;">{{ sys.name }}</div>
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: #A19B8C; margin-top: 2px;">{{ sys.cat }}</div>
+              </div>
+            </div>
+            <p style="font-size: 13.5px; line-height: 1.5; color: #4A453C; margin: 0;">{{ sys.blurb }}</p>
+            <div style="margin-top: auto; padding-top: 10px; border-top: 1px solid #EEEAE0; display: flex; align-items: baseline; gap: 8px;">
+              <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #B4392C; flex: 0 0 auto;">Best for</span>
+              <span style="font-size: 12.5px; color: #6B6559; line-height: 1.35;">{{ sys.bestFor }}</span>
+            </div>
+          </button>
+        </sc-for>
+      </div>
+      <sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}">
+        <div style="text-align: center; padding: 80px 20px; color: #A19B8C;">
+          <div style="font-family: 'Newsreader', serif; font-size: 26px; color: #6B6559;">Nothing matches that.</div>
+          <div style="font-size: 13.5px; margin-top: 8px;">Try a broader term or clear the category filter.</div>
+        </div>
+      </sc-if>
+    </div>
+  </main>
+
+  <sc-if value="{{ hasSel }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ selected.onClose }}" style="position: fixed; inset: 0; background: rgba(26,25,23,0.32); z-index: 40; animation: scrimIn 0.2s ease;"></div>
+    <aside style="position: fixed; top: 0; right: 0; height: 100vh; width: 460px; max-width: 92vw; background: #FBFAF6; border-left: 1px solid #E2DED4; z-index: 41; overflow-y: auto; animation: drawerIn 0.24s cubic-bezier(0.22,1,0.36,1); box-shadow: -30px 0 60px -30px rgba(26,25,23,0.4);">
+      <div style="height: 5px; background: {{ selected.accent }};"></div>
+      <div style="padding: 30px 34px 60px;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;">
+          <div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: #A19B8C;">{{ selected.cat }}</div>
+            <h2 style="font-family: 'Newsreader', serif; font-weight: 500; font-size: 36px; margin: 6px 0 0; letter-spacing: -0.015em;">{{ selected.name }}</h2>
+          </div>
+          <button onClick="{{ selected.onClose }}" style="flex: 0 0 auto; border: 1px solid #DAD5C9; background: transparent; width: 34px; height: 34px; border-radius: 9px; cursor: pointer; font-size: 16px; color: #6B6559; display: flex; align-items: center; justify-content: center;" style-hover="border-color: #1A1917; color: #1A1917;">✕</button>
+        </div>
+
+        <p style="font-size: 15px; line-height: 1.6; color: #3A362E; margin: 20px 0 0;">{{ selected.blurb }}</p>
+
+        <div style="margin: 22px 0 0; padding: 16px 18px; background: {{ selected.accentBg }}; border-radius: 12px;">
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: {{ selected.accent }};">Best for</div>
+          <div style="font-size: 14.5px; line-height: 1.5; color: #2A261F; margin-top: 5px;">{{ selected.bestFor }}</div>
+        </div>
+
+        <div style="margin: 30px 0 0;">
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: #A19B8C; margin-bottom: 10px;">Next step — fetch the spec</div>
+          <div style="border: 1px solid #E2DED4; border-radius: 12px; overflow: hidden;">
+            <div style="padding: 14px 16px; font-size: 13.5px; line-height: 1.55; color: #3A362E; border-bottom: 1px solid #EEEAE0;">Fetch the <strong style="font-weight: 600;">DESIGN.md</strong> from the link below and attach it here — then I'll scaffold the full system.</div>
+            <div style="display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: #F4F2EC;">
+              <code style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #1A1917; flex: 1 1 auto; word-break: break-all; line-height: 1.4;">{{ selected.url }}</code>
+              <button onClick="{{ selected.onCopy }}" style="flex: 0 0 auto; border: 1px solid #1A1917; background: #1A1917; color: #FBFAF6; font-family: 'IBM Plex Mono', monospace; font-size: 11px; padding: 7px 12px; border-radius: 8px; cursor: pointer; white-space: nowrap;">{{ selected.copyLabel }}</button>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin: 30px 0 0;">
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: #A19B8C; margin-bottom: 12px;">What I'll scaffold from it</div>
+          <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px;">
+            <sc-for list="{{ scaffold }}" as="item" hint-placeholder-count="6">
+              <li style="display: flex; gap: 11px; align-items: flex-start; font-size: 13.5px; line-height: 1.45; color: #3A362E;">
+                <span style="flex: 0 0 auto; margin-top: 2px; color: #B4392C; font-size: 12px;">◆</span>
+                <span><strong style="font-weight: 600;">{{ item.file }}</strong> — {{ item.desc }}</span>
+              </li>
+            </sc-for>
+          </ul>
+        </div>
+
+        <div style="margin: 30px 0 0; padding: 14px 16px; border: 1px dashed #DAD5C9; border-radius: 12px; font-size: 12.5px; line-height: 1.5; color: #6B6559;">
+          <strong style="color: #1A1917; font-weight: 600;">One system per project.</strong> Mixing brands muddles the tokens — branch a light/dark or compact/comfortable variant instead of switching wholesale.
+        </div>
+      </div>
+    </aside>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Layout&quot;},&quot;sort&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Menu order&quot;,&quot;A – Z&quot;],&quot;default&quot;:&quot;Menu order&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Layout&quot;}}">
+class Component extends DCLogic {
+  state = { query: '', cat: 'All', selected: null, copied: false };
+
+  CATS = ['AI & LLM Platforms','Developer Tools & IDEs','Backend, Database & DevOps','Productivity & SaaS','Design & Creative Tools','Fintech & Crypto','E-commerce & Retail','Media & Consumer Tech','Automotive'];
+
+  DATA = [
+    { name:'Claude', cat:'AI & LLM Platforms', accent:'#C15F3C', blurb:'Warm terracotta with clean editorial layout.', bestFor:'Writing & thinking tools, calm focused UIs', url:'https://getdesign.md/claude/design-md' },
+    { name:'Cohere', cat:'AI & LLM Platforms', accent:'#FF7759', blurb:'Vibrant gradients over a data-rich dashboard shell.', bestFor:'Enterprise AI dashboards', url:'https://getdesign.md/cohere/design-md' },
+    { name:'ElevenLabs', cat:'AI & LLM Platforms', accent:'#111111', blurb:'Dark, cinematic, with waveform motifs.', bestFor:'Audio, voice & creative AI tools', url:'https://getdesign.md/elevenlabs/design-md' },
+    { name:'Minimax', cat:'AI & LLM Platforms', accent:'#FF5C00', blurb:'Bold dark canvas with neon accents.', bestFor:'Flashy generative AI products', url:'https://getdesign.md/minimax/design-md' },
+    { name:'Mistral AI', cat:'AI & LLM Platforms', accent:'#6D5AE6', blurb:'Minimalist with a decisive purple accent.', bestFor:'Clean technical AI products', url:'https://getdesign.md/mistral.ai/design-md' },
+    { name:'Ollama', cat:'AI & LLM Platforms', accent:'#2B2B2B', blurb:'Terminal-inspired, monochrome throughout.', bestFor:'Local & dev-first tools', url:'https://getdesign.md/ollama/design-md' },
+    { name:'OpenCode AI', cat:'AI & LLM Platforms', accent:'#5A54D6', blurb:'Dev-dark theme built for code.', bestFor:'Coding assistants, IDE plugins', url:'https://getdesign.md/opencode.ai/design-md' },
+    { name:'Replicate', cat:'AI & LLM Platforms', accent:'#111111', blurb:'White canvas, code-forward presentation.', bestFor:'ML model marketplaces & APIs', url:'https://getdesign.md/replicate/design-md' },
+    { name:'RunwayML', cat:'AI & LLM Platforms', accent:'#0A0A0A', blurb:'Cinematic dark for moving image.', bestFor:'Video & creative generative tools', url:'https://getdesign.md/runwayml/design-md' },
+    { name:'Together AI', cat:'AI & LLM Platforms', accent:'#2547E8', blurb:'Blueprint style for infrastructure.', bestFor:'Infra & compute platforms', url:'https://getdesign.md/together.ai/design-md' },
+    { name:'VoltAgent', cat:'AI & LLM Platforms', accent:'#10B981', blurb:'Void-black with an emerald charge.', bestFor:'Agent & automation platforms', url:'https://getdesign.md/voltagent/design-md' },
+    { name:'xAI', cat:'AI & LLM Platforms', accent:'#111111', blurb:'Stark monochrome, maximally minimal.', bestFor:'Bold, minimal AI brands', url:'https://getdesign.md/x.ai/design-md' },
+
+    { name:'Cursor', cat:'Developer Tools & IDEs', accent:'#111111', blurb:'Dev-first, tuned for code editors.', bestFor:'Code editors', url:'https://getdesign.md/cursor/design-md' },
+    { name:'Expo', cat:'Developer Tools & IDEs', accent:'#4630EB', blurb:'Mobile dev tooling with an indigo core.', bestFor:'Mobile dev tooling', url:'https://getdesign.md/expo/design-md' },
+    { name:'Lovable', cat:'Developer Tools & IDEs', accent:'#FF4D82', blurb:'Playful gradients for AI builders.', bestFor:'No-code & AI builder tools', url:'https://getdesign.md/lovable/design-md' },
+    { name:'Raycast', cat:'Developer Tools & IDEs', accent:'#FF6363', blurb:'Command-palette productivity aesthetic.', bestFor:'Keyboard-driven productivity', url:'https://getdesign.md/raycast/design-md' },
+    { name:'Superhuman', cat:'Developer Tools & IDEs', accent:'#4F46E5', blurb:'Premium, fast, keyboard-driven.', bestFor:'Speed-obsessed power tools', url:'https://getdesign.md/superhuman/design-md' },
+    { name:'Vercel', cat:'Developer Tools & IDEs', accent:'#111111', blurb:'Clean dev infra & deploy dashboards.', bestFor:'Deploy dashboards, infra', url:'https://getdesign.md/vercel/design-md' },
+    { name:'Warp', cat:'Developer Tools & IDEs', accent:'#14B8A6', blurb:'Modern terminal aesthetics.', bestFor:'Terminal & CLI-adjacent tools', url:'https://getdesign.md/warp/design-md' },
+
+    { name:'ClickHouse', cat:'Backend, Database & DevOps', accent:'#F2C200', blurb:'Dense analytics dashboards, dark-mode ready.', bestFor:'High-volume data tables', url:'https://getdesign.md/clickhouse/design-md' },
+    { name:'Composio', cat:'Backend, Database & DevOps', accent:'#6366F1', blurb:'Built for integration & automation.', bestFor:'Integration platforms', url:'https://getdesign.md/composio/design-md' },
+    { name:'HashiCorp', cat:'Backend, Database & DevOps', accent:'#2E2E2E', blurb:'Structured for ops-heavy tools.', bestFor:'Infra & ops tooling', url:'https://getdesign.md/hashicorp/design-md' },
+    { name:'MongoDB', cat:'Backend, Database & DevOps', accent:'#00A64F', blurb:'Database & dev-console green.', bestFor:'Database console UIs', url:'https://getdesign.md/mongodb/design-md' },
+    { name:'PostHog', cat:'Backend, Database & DevOps', accent:'#F54E00', blurb:'Product analytics with hedgehog warmth.', bestFor:'Product analytics dashboards', url:'https://getdesign.md/posthog/design-md' },
+    { name:'Sanity', cat:'Backend, Database & DevOps', accent:'#F03E2F', blurb:'Structured content platform styling.', bestFor:'CMS & content platforms', url:'https://getdesign.md/sanity/design-md' },
+    { name:'Sentry', cat:'Backend, Database & DevOps', accent:'#7552CC', blurb:'Purple-forward monitoring surfaces.', bestFor:'Error & monitoring dashboards', url:'https://getdesign.md/sentry/design-md' },
+    { name:'Supabase', cat:'Backend, Database & DevOps', accent:'#3ECF8E', blurb:'Dev-friendly backend console green.', bestFor:'Backend consoles', url:'https://getdesign.md/supabase/design-md' },
+
+    { name:'Cal.com', cat:'Productivity & SaaS', accent:'#111111', blurb:'Clean scheduling & booking surfaces.', bestFor:'Scheduling & booking tools', url:'https://getdesign.md/cal/design-md' },
+    { name:'Intercom', cat:'Productivity & SaaS', accent:'#1F8DED', blurb:'Friendly support & chat UI.', bestFor:'Support & chat products', url:'https://getdesign.md/intercom/design-md' },
+    { name:'Linear', cat:'Productivity & SaaS', accent:'#5E6AD2', blurb:'Fast, minimal, keyboard-native.', bestFor:'Project management, fast tools', url:'https://getdesign.md/linear.app/design-md' },
+    { name:'Mintlify', cat:'Productivity & SaaS', accent:'#16A34A', blurb:'Polished documentation styling.', bestFor:'Documentation sites', url:'https://getdesign.md/mintlify/design-md' },
+    { name:'Notion', cat:'Productivity & SaaS', accent:'#2E2E2E', blurb:'Soft, document-first workspace look.', bestFor:'Docs & workspace tools', url:'https://getdesign.md/notion/design-md' },
+    { name:'Resend', cat:'Productivity & SaaS', accent:'#111111', blurb:'Dev-facing email infra, crisp mono.', bestFor:'Email infra', url:'https://getdesign.md/resend/design-md' },
+    { name:'Zapier', cat:'Productivity & SaaS', accent:'#FF4F00', blurb:'Approachable workflow automation.', bestFor:'Workflow automation', url:'https://getdesign.md/zapier/design-md' },
+
+    { name:'Airtable', cat:'Design & Creative Tools', accent:'#2D7FF9', blurb:'Flexible database & spreadsheet blocks.', bestFor:'Database/spreadsheet tools', url:'https://getdesign.md/airtable/design-md' },
+    { name:'Clay', cat:'Design & Creative Tools', accent:'#F97316', blurb:'Creative, playful data surfaces.', bestFor:'Playful data tools', url:'https://getdesign.md/clay/design-md' },
+    { name:'Figma', cat:'Design & Creative Tools', accent:'#F24E1E', blurb:'Canvas-first collaboration.', bestFor:'Canvas & creative collab', url:'https://getdesign.md/figma/design-md' },
+    { name:'Framer', cat:'Design & Creative Tools', accent:'#0099FF', blurb:'Prototyping & website builder polish.', bestFor:'Website & prototyping builders', url:'https://getdesign.md/framer/design-md' },
+    { name:'Miro', cat:'Design & Creative Tools', accent:'#F5C339', blurb:'Whiteboard energy, sticky-note yellow.', bestFor:'Whiteboard & collaboration', url:'https://getdesign.md/miro/design-md' },
+    { name:'Webflow', cat:'Design & Creative Tools', accent:'#4353FF', blurb:'Visual web-builder structure.', bestFor:'Visual web builders', url:'https://getdesign.md/webflow/design-md' },
+
+    { name:'Binance', cat:'Fintech & Crypto', accent:'#E6A700', blurb:'High-density trading gold.', bestFor:'Trading platforms', url:'https://getdesign.md/binance/design-md' },
+    { name:'Coinbase', cat:'Fintech & Crypto', accent:'#0052FF', blurb:'Consumer crypto blue, trust-forward.', bestFor:'Consumer crypto apps', url:'https://getdesign.md/coinbase/design-md' },
+    { name:'Kraken', cat:'Fintech & Crypto', accent:'#7132F5', blurb:'Data-dense exchange purple.', bestFor:'Crypto exchanges', url:'https://getdesign.md/kraken/design-md' },
+    { name:'Mastercard', cat:'Fintech & Crypto', accent:'#EB001B', blurb:'Payments, trust-first identity.', bestFor:'Payments, trust-critical UIs', url:'https://getdesign.md/mastercard/design-md' },
+    { name:'Revolut', cat:'Fintech & Crypto', accent:'#191C1F', blurb:'Modern consumer banking, near-black.', bestFor:'Consumer banking', url:'https://getdesign.md/revolut/design-md' },
+    { name:'Stripe', cat:'Fintech & Crypto', accent:'#635BFF', blurb:'Clean fintech infra & dashboards.', bestFor:'Fintech dashboards', url:'https://getdesign.md/stripe/design-md' },
+    { name:'Wise', cat:'Fintech & Crypto', accent:'#37517A', blurb:'Friendly cross-border payments.', bestFor:'Cross-border payments', url:'https://getdesign.md/wise/design-md' },
+
+    { name:'Airbnb', cat:'E-commerce & Retail', accent:'#FF385C', blurb:'Warm, visual marketplace booking.', bestFor:'Marketplaces & booking', url:'https://getdesign.md/airbnb/design-md' },
+    { name:'Meta', cat:'E-commerce & Retail', accent:'#0866FF', blurb:'Social scale, consumer blue.', bestFor:'Social & consumer scale', url:'https://getdesign.md/meta/design-md' },
+    { name:'Nike', cat:'E-commerce & Retail', accent:'#111111', blurb:'Bold consumer retail energy.', bestFor:'Bold retail brands', url:'https://getdesign.md/nike/design-md' },
+    { name:'Shopify', cat:'E-commerce & Retail', accent:'#5E8E3E', blurb:'Commerce admin & storefront green.', bestFor:'E-commerce admin/storefronts', url:'https://getdesign.md/shopify/design-md' },
+
+    { name:'Apple', cat:'Media & Consumer Tech', accent:'#1D1D1F', blurb:'Premium, restrained consumer tech.', bestFor:'Premium consumer products', url:'https://getdesign.md/apple/design-md' },
+    { name:'IBM', cat:'Media & Consumer Tech', accent:'#0F62FE', blurb:'Enterprise, highly structured.', bestFor:'Enterprise, structured tools', url:'https://getdesign.md/ibm/design-md' },
+    { name:'NVIDIA', cat:'Media & Consumer Tech', accent:'#76B900', blurb:'High-tech dark, performance-driven.', bestFor:'Performance & compute', url:'https://getdesign.md/nvidia/design-md' },
+    { name:'Pinterest', cat:'Media & Consumer Tech', accent:'#E60023', blurb:'Visual discovery, grid-based.', bestFor:'Visual discovery apps', url:'https://getdesign.md/pinterest/design-md' },
+    { name:'PlayStation', cat:'Media & Consumer Tech', accent:'#0070D1', blurb:'Bold dark gaming UI.', bestFor:'Gaming interfaces', url:'https://getdesign.md/playstation/design-md' },
+    { name:'SpaceX', cat:'Media & Consumer Tech', accent:'#1A1A1A', blurb:'Technical, high-stakes, minimal.', bestFor:'High-stakes technical tools', url:'https://getdesign.md/spacex/design-md' },
+    { name:'Spotify', cat:'Media & Consumer Tech', accent:'#1DB954', blurb:'Media streaming, bold color blocks.', bestFor:'Media & streaming', url:'https://getdesign.md/spotify/design-md' },
+    { name:'The Verge', cat:'Media & Consumer Tech', accent:'#5200FF', blurb:'Editorial, high-contrast media.', bestFor:'Editorial & media sites', url:'https://getdesign.md/theverge/design-md' },
+    { name:'Uber', cat:'Media & Consumer Tech', accent:'#111111', blurb:'On-demand service, black & white.', bestFor:'On-demand consumer apps', url:'https://getdesign.md/uber/design-md' },
+    { name:'Vodafone', cat:'Media & Consumer Tech', accent:'#E60000', blurb:'Telecom, corporate consumer red.', bestFor:'Telecom & corporate consumer', url:'https://getdesign.md/vodafone/design-md' },
+    { name:'WIRED', cat:'Media & Consumer Tech', accent:'#1A1A1A', blurb:'Tech editorial & publishing.', bestFor:'Tech editorial/publishing', url:'https://getdesign.md/wired/design-md' },
+
+    { name:'BMW', cat:'Automotive', accent:'#0066B1', blurb:'Precision, premium engineering.', bestFor:'Precision premium brands', url:'https://getdesign.md/bmw/design-md' },
+    { name:'Bugatti', cat:'Automotive', accent:'#0F2B5B', blurb:'Ultra-luxury, dramatic contrast.', bestFor:'Ultra-luxury products', url:'https://getdesign.md/bugatti/design-md' },
+    { name:'Ferrari', cat:'Automotive', accent:'#D40000', blurb:'Bold, high-performance red.', bestFor:'High-performance brands', url:'https://getdesign.md/ferrari/design-md' },
+    { name:'Lamborghini', cat:'Automotive', accent:'#B48A00', blurb:'Aggressive luxury, gold on black.', bestFor:'Aggressive luxury', url:'https://getdesign.md/lamborghini/design-md' },
+    { name:'Renault', cat:'Automotive', accent:'#E0A800', blurb:'Approachable consumer automotive.', bestFor:'Approachable automotive', url:'https://getdesign.md/renault/design-md' },
+    { name:'Tesla', cat:'Automotive', accent:'#E82127', blurb:'Minimal, tech-forward automotive.', bestFor:'Tech-forward automotive', url:'https://getdesign.md/tesla/design-md' },
+  ];
+
+  SCAFFOLD = [
+    { file:'README.md', desc:'brand context, voice, visual foundations' },
+    { file:'colors_and_type.css', desc:'CSS variables, type scale, utility classes' },
+    { file:'Google Font substitutes', desc:'if the brand font is proprietary' },
+    { file:'preview/ cards', desc:'colors, type, spacing, components, brand' },
+    { file:'UI kit', desc:'index.html + components on your real product screens' },
+    { file:'SKILL.md', desc:'a portable skill file for future reuse' },
+  ];
+
+  hexA(hex, a) {
+    const h = hex.replace('#','');
+    const r = parseInt(h.substring(0,2),16), g = parseInt(h.substring(2,4),16), b = parseInt(h.substring(4,6),16);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+
+  renderVals() {
+    const q = (this.state.query || '').trim().toLowerCase();
+    const cat = this.state.cat || 'All';
+    const density = this.props.density || 'comfortable';
+    const sort = this.props.sort || 'Menu order';
+    let all = this.DATA.slice();
+    if (sort === 'A – Z') all.sort((a,b) => a.name.localeCompare(b.name));
+
+    let filtered = all.filter(s =>
+      (cat === 'All' || s.cat === cat) &&
+      (!q || (s.name + ' ' + s.blurb + ' ' + s.bestFor + ' ' + s.cat).toLowerCase().includes(q))
+    );
+
+    const cardPad = density === 'compact' ? '14px 16px' : '18px 20px';
+
+    const enriched = filtered.map(s => ({
+      ...s,
+      letter: s.name[0],
+      accentBg: this.hexA(s.accent, 0.10),
+      onSelect: () => this.setState({ selected: s, copied: false }),
+    }));
+
+    const cats = ['All', ...this.CATS].map(c => {
+      const active = c === cat;
+      const count = c === 'All' ? this.DATA.length : this.DATA.filter(s => s.cat === c).length;
+      return {
+        name: c === 'All' ? 'All' : c,
+        count,
+        onClick: () => this.setState({ cat: c }),
+        bg: active ? '#1A1917' : '#FBFAF6',
+        fg: active ? '#F4F2EC' : '#4A453C',
+        border: active ? '#1A1917' : '#DAD5C9',
+      };
+    });
+
+    const sel = this.state.selected;
+    const selected = sel ? {
+      ...sel,
+      accentBg: this.hexA(sel.accent, 0.12),
+      copyLabel: this.state.copied ? 'Copied ✓' : 'Copy',
+      onCopy: () => {
+        try { navigator.clipboard && navigator.clipboard.writeText(sel.url); } catch(e) {}
+        this.setState({ copied: true });
+      },
+      onClose: () => this.setState({ selected: null }),
+    } : null;
+
+    return {
+      filtered: enriched,
+      cats,
+      count: filtered.length,
+      total: this.DATA.length,
+      empty: filtered.length === 0,
+      selected,
+      hasSel: !!selected,
+      scaffold: this.SCAFFOLD,
+      cardPad,
+      onSearch: (e) => this.setState({ query: e.target.value }),
+    };
+  }
+}
+</script>
+</body>
+</html>

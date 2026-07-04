@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #08080A; }
+  ::selection { background: #6E8BFF; color: #08080A; }
+</style>
+</helmet>
+
+<div style="min-height: 100vh; background: #08080A; color: #F4F4F6; font-family: 'Manrope', sans-serif; padding: 56px 48px 96px; max-width: 1160px; margin: 0 auto;">
+
+  <header style="border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 32px; margin-bottom: 48px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77;">rocketride-podcasts · design system</div>
+    <h1 style="font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 48px; line-height: 1.05; letter-spacing: -0.02em; margin: 18px 0 0;">Foundations</h1>
+    <p style="font-size: 16px; line-height: 1.6; color: #A6A6AE; max-width: 620px; margin: 16px 0 0;">A dark, cinematic studio surface — monochrome ramp, one signal accent, and the waveform as the recurring motif. Every number lives in monospace.</p>
+    <div style="display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 5px 11px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.16); color: #A6A6AE;">Dark cinematic</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 5px 11px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.16); color: #A6A6AE;">Waveform-forward</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 5px 11px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.16); color: #A6A6AE;">Mono for every number</span>
+    </div>
+  </header>
+
+  <!-- COLOR -->
+  <section style="margin-bottom: 64px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77; margin-bottom: 20px;">01 — Surface ramp</div>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;">
+      <div style="border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; overflow: hidden;">
+        <div style="height: 84px; background: #08080A; border-bottom: 1px solid rgba(255,255,255,0.08);"></div>
+        <div style="padding: 12px 14px;"><div style="font-size: 13px; font-weight: 600;">Canvas</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6E6E77; margin-top: 3px;">#08080A</div></div>
+      </div>
+      <div style="border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; overflow: hidden;">
+        <div style="height: 84px; background: #0E0E11;"></div>
+        <div style="padding: 12px 14px;"><div style="font-size: 13px; font-weight: 600;">Surface 1</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6E6E77; margin-top: 3px;">#0E0E11</div></div>
+      </div>
+      <div style="border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; overflow: hidden;">
+        <div style="height: 84px; background: #16161A;"></div>
+        <div style="padding: 12px 14px;"><div style="font-size: 13px; font-weight: 600;">Surface 2</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6E6E77; margin-top: 3px;">#16161A</div></div>
+      </div>
+      <div style="border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; overflow: hidden;">
+        <div style="height: 84px; background: #1F1F24;"></div>
+        <div style="padding: 12px 14px;"><div style="font-size: 13px; font-weight: 600;">Surface 3</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6E6E77; margin-top: 3px;">#1F1F24</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ACCENT + STATUS -->
+  <section style="margin-bottom: 64px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77; margin-bottom: 20px;">02 — Signal &amp; status</div>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px;">
+      <div style="background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 20px; box-shadow: 0 0 0 1px rgba(110,139,255,0.14), 0 8px 40px -12px rgba(110,139,255,0.35);">
+        <div style="width: 40px; height: 40px; border-radius: 10px; background: #6E8BFF;"></div>
+        <div style="font-size: 14px; font-weight: 600; margin-top: 14px;">Signal accent</div>
+        <div style="font-size: 12.5px; color: #A6A6AE; line-height: 1.5; margin-top: 4px;">Playhead · active waveform · focus · links. The only bright hue.</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6E8BFF; margin-top: 10px;">#6E8BFF · oklch(.72 .14 264)</div>
+      </div>
+      <div style="background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 20px;">
+        <div style="width: 40px; height: 40px; border-radius: 10px; background: #4FBF8F;"></div>
+        <div style="font-size: 14px; font-weight: 600; margin-top: 14px;">Ready</div>
+        <div style="font-size: 12.5px; color: #A6A6AE; line-height: 1.5; margin-top: 4px;">Broadcast-ready, success.</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #4FBF8F; margin-top: 10px;">#4FBF8F</div>
+      </div>
+      <div style="background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 20px;">
+        <div style="width: 40px; height: 40px; border-radius: 10px; background: #E0A34D;"></div>
+        <div style="font-size: 14px; font-weight: 600; margin-top: 14px;">Processing</div>
+        <div style="font-size: 12.5px; color: #A6A6AE; line-height: 1.5; margin-top: 4px;">Rendering, in-progress.</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #E0A34D; margin-top: 10px;">#E0A34D</div>
+      </div>
+      <div style="background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 20px;">
+        <div style="width: 40px; height: 40px; border-radius: 10px; background: #E0625B;"></div>
+        <div style="font-size: 14px; font-weight: 600; margin-top: 14px;">Danger</div>
+        <div style="font-size: 12.5px; color: #A6A6AE; line-height: 1.5; margin-top: 4px;">Destructive, cut, failed.</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #E0625B; margin-top: 10px;">#E0625B</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TYPE -->
+  <section style="margin-bottom: 64px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77; margin-bottom: 20px;">03 — Type</div>
+    <div style="display: flex; flex-direction: column; gap: 20px; background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 32px;">
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 20px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 18px;">
+        <span style="font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 48px; letter-spacing: -0.02em; line-height: 1;">Broadcast-ready</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6E6E77; white-space: nowrap;">Space Grotesk · 48 / 700</span>
+      </div>
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 20px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 18px;">
+        <span style="font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 24px; letter-spacing: -0.02em;">Chat editing session</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6E6E77; white-space: nowrap;">Space Grotesk · 24 / 600</span>
+      </div>
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 20px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 18px;">
+        <span style="font-family: 'Manrope', sans-serif; font-size: 15px; color: #A6A6AE; max-width: 60%;">Body copy in Manrope — legible at UI sizes, warm grotesque. Cut the tangent, keep the intro.</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6E6E77; white-space: nowrap;">Manrope · 15 / 400</span>
+      </div>
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 20px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #6E8BFF;">11:58.240 → 12:14.005 · −16 LUFS · −1 dBTP</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6E6E77; white-space: nowrap;">IBM Plex Mono · 13</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- WAVEFORM MOTIF -->
+  <section style="margin-bottom: 64px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77; margin-bottom: 20px;">04 — Waveform motif</div>
+    <div style="background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 28px 32px;">
+      <div style="display: flex; align-items: center; gap: 2px; height: 96px;">
+        <sc-for list="{{ bars }}" as="b" hint-placeholder-count="90">
+          <div style="flex: 1 1 auto; border-radius: 2px; background: {{ b.color }}; height: {{ b.h }};"></div>
+        </sc-for>
+      </div>
+      <div style="display: flex; gap: 20px; margin-top: 18px; flex-wrap: wrap;">
+        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 12px; height: 12px; border-radius: 3px; background: rgba(255,255,255,0.22);"></span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #A6A6AE;">inactive</span></div>
+        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 12px; height: 12px; border-radius: 3px; background: #6E8BFF;"></span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #A6A6AE;">played / active</span></div>
+        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 12px; height: 12px; border-radius: 3px; background: rgba(224,98,91,0.5);"></span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #A6A6AE;">cut region</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- COMPONENTS -->
+  <section style="margin-bottom: 64px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77; margin-bottom: 20px;">05 — Component primitives</div>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px;">
+      <div style="background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 14px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6E6E77;">Buttons</div>
+        <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
+          <button style="background: #F4F4F6; color: #08080A; border: none; font-family: 'Manrope'; font-size: 13px; font-weight: 600; padding: 10px 16px; border-radius: 8px; cursor: pointer;">Make broadcast-ready</button>
+          <button style="background: transparent; color: #F4F4F6; border: 1px solid rgba(255,255,255,0.16); font-family: 'Manrope'; font-size: 13px; font-weight: 600; padding: 10px 16px; border-radius: 8px; cursor: pointer;">Preview</button>
+          <button style="background: #6E8BFF; color: #08080A; border: none; font-family: 'Manrope'; font-size: 13px; font-weight: 600; padding: 10px 16px; border-radius: 8px; cursor: pointer;">Render</button>
+        </div>
+      </div>
+      <div style="background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 14px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6E6E77;">Input</div>
+        <input type="text" placeholder="Tell the agent what to cut…" style="background: #16161A; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; color: #F4F4F6; padding: 11px 12px; font-family: 'Manrope'; font-size: 13px; outline: none;" style-focus="border-color: #6E8BFF; box-shadow: 0 0 0 3px rgba(110,139,255,0.14);">
+        <div style="display: flex; gap: 8px;">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; padding: 5px 11px; border-radius: 999px; color: #4FBF8F; background: rgba(79,191,143,0.14);">● Ready</span>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; padding: 5px 11px; border-radius: 999px; color: #E0A34D; background: rgba(224,163,77,0.14);">● Rendering</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SPACING -->
+  <section>
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: #6E6E77; margin-bottom: 20px;">06 — Spacing &amp; radius</div>
+    <div style="display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; background: #0E0E11; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 28px 32px;">
+      <sc-for list="{{ spaces }}" as="s" hint-placeholder-count="8">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+          <div style="width: {{ s.px }}; height: {{ s.px }}; background: #6E8BFF; border-radius: 4px; opacity: 0.85;"></div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6E6E77;">{{ s.label }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    // Waveform demo: symmetric-ish bars; first ~30% "played" (accent), a cut band, rest inactive.
+    const n = 90;
+    const bars = [];
+    for (let i = 0; i < n; i++) {
+      const base = Math.abs(Math.sin(i * 0.5) * 0.6 + Math.sin(i * 0.17) * 0.4);
+      const h = Math.max(8, Math.round((0.15 + base * 0.85) * 88));
+      let color = 'rgba(255,255,255,0.22)';
+      if (i < 26) color = '#6E8BFF';
+      else if (i >= 40 && i < 52) color = 'rgba(224,98,91,0.5)';
+      bars.push({ h: h + 'px', color });
+    }
+    const spaces = [4,8,12,16,24,32,48,64].map(px => ({ px: px + 'px', label: px }));
+    return { bars, spaces };
+  }
+}
+</script>
+</body>
+</html>
