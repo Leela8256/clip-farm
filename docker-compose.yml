@@ -2,7 +2,10 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      # Host port bumped to 6380 — 6379 is already taken by another local
+      # RocketRide project's Redis container. Only affects host access;
+      # api/worker still reach this over the internal "redis:6379" hostname.
+      - "6380:6379"
     volumes:
       - redis-data:/data
 
@@ -13,10 +16,60 @@ services:
       POSTGRES_PASSWORD: rocketride
       POSTGRES_DB: rocketride_podcasts
     ports:
-      - "5432:5432"
+      # Host port bumped to 5433 — 5432 is already taken by another local
+      # project's Postgres container.
+      - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rocketride"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://rocketride:rocketride@postgres:5432/rocketride_podcasts
+      # The RocketRide engine and its chat_editor agent run on the host, not in a
+      # container — host.docker.internal lets both directions of that call work:
+      # this container reaching the engine, and the engine's tool_http_request
+      # node reaching back into this container's /api/internal/tools/*.
+      ROCKETRIDE_URI: ${ROCKETRIDE_URI:-http://host.docker.internal:5565}
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - ./assets:/app/assets
+      - tmp-data:/app/tmp
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  worker:
+    build: ./backend
+    command: celery -A workers.celery_app worker --loglevel=info
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://rocketride:rocketride@postgres:5432/rocketride_podcasts
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - ./assets:/app/assets
+      - tmp-data:/app/tmp
 
 volumes:
   redis-data:
   postgres-data:
+  tmp-data:
