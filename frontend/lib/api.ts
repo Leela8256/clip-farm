@@ -1,4 +1,4 @@
-import type { Transcript, Edl, ChatMessage, TaskStatus, Mode } from "./types";
+import type { Transcript, Edl, ChatMessage, Mode, JobEvent } from "./types";
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -23,10 +23,6 @@ export const api = {
         body: JSON.stringify({ job_id, audio_path, mode }),
       })
     );
-  },
-
-  async taskStatus(task_id: string): Promise<TaskStatus> {
-    return json(await fetch(`/api/tasks/${task_id}/status`));
   },
 
   async transcript(job_id: string): Promise<Transcript> {
@@ -58,6 +54,25 @@ export const api = {
   downloadUrl: (job_id: string) => `/api/download/${job_id}`,
   previewUrl: (job_id: string) => `/api/preview/${job_id}`,
 };
+
+/**
+ * Opens a job status WebSocket. Returns a cleanup function — call it on unmount.
+ * Push-based replacement for polling GET /api/tasks/{id}/status.
+ */
+export function watchJob(job_id: string, onEvent: (event: JobEvent) => void): () => void {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(`${protocol}//${window.location.host}/ws/jobs/${job_id}`);
+
+  socket.onmessage = (msg) => {
+    try {
+      onEvent(JSON.parse(msg.data));
+    } catch {
+      // ignore malformed frames
+    }
+  };
+
+  return () => socket.close();
+}
 
 export function fmtMs(ms: number): string {
   const s = Math.floor(ms / 1000);

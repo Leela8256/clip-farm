@@ -5,7 +5,7 @@ python-multipart==0.0.9
 
 # Task queue
 celery[redis]==5.4.0
-redis==5.0.8
+redis==5.0.8  # also used directly for job-status pub/sub (see workers/events.py, api/routes/ws.py)
 
 # Database
 sqlalchemy==2.0.35

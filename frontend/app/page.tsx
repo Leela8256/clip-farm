@@ -19,8 +19,8 @@ export default function UploadPage() {
       setError(null);
       try {
         const { job_id, audio_path } = await api.upload(file);
-        const { task_id } = await api.startJob(job_id, audio_path, mode);
-        router.push(`/editor?job=${job_id}&task=${task_id}&mode=${mode}`);
+        await api.startJob(job_id, audio_path, mode);
+        router.push(`/editor?job=${job_id}&mode=${mode}`);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Upload failed");
         setBusy(false);

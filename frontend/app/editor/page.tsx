@@ -3,8 +3,8 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Download, Loader2, Scissors } from "lucide-react";
-import { api, fmtMs } from "@/lib/api";
-import type { Transcript, Edl, ChatMessage, TaskStatus, Mode } from "@/lib/types";
+import { api, watchJob } from "@/lib/api";
+import type { Transcript, Edl, ChatMessage, Mode, JobEvent } from "@/lib/types";
 import TranscriptEditor from "@/components/editor/TranscriptEditor";
 import EdlPanel from "@/components/editor/EdlPanel";
 import ChatPanel from "@/components/chat/ChatPanel";
@@ -28,39 +28,45 @@ export default function EditorPageWrapper() {
 function EditorPage() {
   const params = useSearchParams();
   const jobId = params.get("job") ?? "";
-  const initialTask = params.get("task") ?? "";
   const mode = (params.get("mode") ?? "autopilot") as Mode;
 
-  const [status, setStatus] = useState<TaskStatus | null>(null);
+  const [jobStatus, setJobStatus] = useState<string | null>(null);
+  const [stage, setStage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<Transcript | null>(null);
   const [edl, setEdl] = useState<Edl | null>(null);
   const [history, setHistory] = useState<ChatMessage[]>([]);
-  const [renderTask, setRenderTask] = useState<string | null>(null);
+  const [rendering, setRendering] = useState(false);
   const [done, setDone] = useState(false);
 
-  const activeTask = renderTask ?? initialTask;
-
-  // Poll task status
+  // Live job status via WebSocket — replaces polling GET /api/tasks/{id}/status
   useEffect(() => {
-    if (!activeTask || done) return;
-    const iv = setInterval(async () => {
-      const s = await api.taskStatus(activeTask);
-      setStatus(s);
-      if (s.state === "SUCCESS") {
-        if (mode === "autopilot" || renderTask) {
-          setDone(true);
+    if (!jobId) return;
+
+    const handleEvent = async (event: JobEvent) => {
+      if (event.type === "snapshot") {
+        setJobStatus(event.status);
+        setStage(event.stage);
+        setError(event.error);
+        if (event.status === "done") setDone(true);
+      } else if (event.type === "stage") {
+        setStage(event.stage);
+        setJobStatus("running");
+      } else if (event.type === "terminal") {
+        setJobStatus(event.status);
+        if (event.status === "done") {
+          if (mode === "autopilot" || rendering) setDone(true);
+          try {
+            setTranscript(await api.transcript(jobId));
+            setEdl(await api.edl(jobId));
+          } catch {}
         }
-        // chat mode: transcription finished, load transcript + edl
-        try {
-          setTranscript(await api.transcript(jobId));
-          setEdl(await api.edl(jobId));
-        } catch {}
-        clearInterval(iv);
+        if (event.status !== "done") setError(event.status);
       }
-      if (s.state === "FAILURE") clearInterval(iv);
-    }, 2500);
-    return () => clearInterval(iv);
-  }, [activeTask, jobId, mode, renderTask, done]);
+    };
+
+    return watchJob(jobId, handleEvent);
+  }, [jobId, mode, rendering]);
 
   const onChat = useCallback(
     async (message: string) => {
@@ -73,18 +79,18 @@ function EditorPage() {
   );
 
   const onRender = useCallback(async () => {
-    const { task_id } = await api.render(jobId);
-    setRenderTask(task_id);
+    await api.render(jobId);
+    setRendering(true);
     setDone(false);
   }, [jobId]);
 
   // ── render states ──────────────────────────────────────
 
-  if (status?.state === "FAILURE") {
+  if (error) {
     return (
       <div className="rounded-lg border border-cut/40 bg-cut/10 p-6 text-sm">
         <p className="font-medium text-cut">Pipeline failed</p>
-        <p className="mt-2 font-mono text-xs text-ink-dim">{status.error}</p>
+        <p className="mt-2 font-mono text-xs text-ink-dim">{error}</p>
       </div>
     );
   }
@@ -109,11 +115,10 @@ function EditorPage() {
     );
   }
 
-  const processing =
-    !status || status.state === "PENDING" || status.state === "PROGRESS";
+  const processing = jobStatus === null || jobStatus === "pending" || jobStatus === "running";
 
   if (processing && (mode === "autopilot" || !transcript)) {
-    const label = status?.stage ? STAGE_LABELS[status.stage] ?? status.stage : "Starting";
+    const label = stage ? STAGE_LABELS[stage] ?? stage : "Starting";
     return (
       <div className="mx-auto max-w-xl pt-24 text-center">
         <Loader2 className="mx-auto h-8 w-8 animate-spin text-accent" />
@@ -137,8 +142,8 @@ function EditorPage() {
           <EdlPanel
             edl={edl}
             onRender={onRender}
-            rendering={!!renderTask && !done}
-            stage={renderTask ? status?.stage : undefined}
+            rendering={rendering && !done}
+            stage={rendering ? stage ?? undefined : undefined}
           />
         )}
         <ChatPanel history={history} onSend={onChat} />

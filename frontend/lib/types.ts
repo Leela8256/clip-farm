@@ -56,3 +56,8 @@ export interface TaskStatus {
 }
 
 export type Mode = "autopilot" | "chat";
+
+export type JobEvent =
+  | { type: "snapshot"; status: string; stage: string | null; error: string | null; final_file: string | null }
+  | { type: "stage"; stage: string }
+  | { type: "terminal"; status: string; final_file?: string };
