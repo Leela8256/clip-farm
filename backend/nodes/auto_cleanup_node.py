@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 
 from utils.edl import EditDecisionList
-from utils.dsp import load_audio, detect_silences
+from utils.dsp import load_audio, detect_silences, detect_silences_from_vad_gaps
 
 
 DEFAULT_FILLERS = {"um", "uh", "erm", "hmm", "mhm"}
@@ -26,6 +26,21 @@ def _configured_fillers() -> set[str]:
     # single-word fillers only in auto mode — multi-word phrases like
     # "you know" are too contextual to cut blindly; the chat agent handles those
     return DEFAULT_FILLERS | {w for w in extra if " " not in w}
+
+
+def _merge_overlapping(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Union overlapping/adjacent (start, end) ranges from the two silence detectors."""
+    if not ranges:
+        return []
+    ranges = sorted(ranges)
+    merged = [ranges[0]]
+    for start, end in ranges[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 class AutoCleanupNode:
@@ -45,10 +60,18 @@ class AutoCleanupNode:
             total_duration_ms=len(audio),
         )
 
-        # 1. Silence cuts
+        # 1. Silence cuts — two complementary signals, deduplicated:
+        #    amplitude-based (works well on clean studio recordings) and
+        #    VAD-gap-based (catches pauses amplitude detection misses on
+        #    noisy/lo-fi source where the noise floor sits close to speech
+        #    level, since transcription segments are already VAD-filtered).
         silence_thresh = float(os.getenv("SILENCE_THRESHOLD_DB", "-40"))
         min_silence = int(os.getenv("MIN_SILENCE_MS", "800"))
-        for start, end in detect_silences(audio, silence_thresh, min_silence):
+        amplitude_silences = detect_silences(audio, silence_thresh, min_silence)
+        vad_silences = detect_silences_from_vad_gaps(
+            transcript.get("segments", []), len(audio), min_silence
+        )
+        for start, end in _merge_overlapping(amplitude_silences + vad_silences):
             edl.add_cut(start, end, reason="long silence", source="auto")
 
         # 2. Filler word cuts (word boundaries from transcript)

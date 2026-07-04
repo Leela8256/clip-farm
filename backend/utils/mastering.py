@@ -111,6 +111,18 @@ def normalize_loudness(in_wav: Path, out_file: Path) -> Path:
     return out_file
 
 
+def normalize_final_mix(in_file: Path, out_file: Path) -> Path:
+    """
+    Re-applies loudness/true-peak normalisation to the fully stitched episode
+    (after intro/outro brand-merge). Brand assets are rarely mastered to the
+    same -16 LUFS / -1 dBTP target as the spoken-word episode — splicing them
+    in unnormalised can drag the overall measured loudness and true peak past
+    spec even when the episode itself was mastered correctly. This is a plain
+    re-run of the same two-pass ffmpeg-normalize step on the final mix.
+    """
+    return normalize_loudness(in_file, out_file)
+
+
 def master(in_wav: Path, out_file: Path, work_dir: Path) -> Path:
     """
     Full mastering chain. If AUPHONIC_API_KEY is set, delegate to Auphonic;

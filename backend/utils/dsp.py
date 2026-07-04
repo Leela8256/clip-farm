@@ -148,6 +148,44 @@ def detect_silences(
     return cuttable
 
 
+def detect_silences_from_vad_gaps(
+    segments: list[dict],
+    total_duration_ms: int,
+    min_silence_ms: int = 800,
+    keep_pause_ms: int = 350,
+) -> list[tuple[int, int]]:
+    """
+    Fallback/complementary silence detector: transcription segments are
+    already VAD-filtered (non-speech dropped before transcription), so gaps
+    between consecutive segments are genuine non-speech regions regardless
+    of the audio's noise floor. This catches pauses that amplitude-based
+    detect_silences() misses on noisy/lo-fi source material, where ambient
+    noise sits too close to speech level for a dBFS threshold to separate
+    them (e.g. old analog tape transfers, room tone from the mic gain).
+    """
+    cuttable = []
+    prev_end = 0
+    for seg in sorted(segments, key=lambda s: s["start_ms"]):
+        gap = seg["start_ms"] - prev_end
+        if gap >= min_silence_ms:
+            pad = keep_pause_ms // 2
+            cut_start = prev_end + pad
+            cut_end = seg["start_ms"] - pad
+            if cut_end - cut_start > 100:
+                cuttable.append((cut_start, cut_end))
+        prev_end = max(prev_end, seg["end_ms"])
+
+    trailing_gap = total_duration_ms - prev_end
+    if trailing_gap >= min_silence_ms:
+        pad = keep_pause_ms // 2
+        cut_start = prev_end + pad
+        cut_end = total_duration_ms - pad
+        if cut_end - cut_start > 100:
+            cuttable.append((cut_start, cut_end))
+
+    return cuttable
+
+
 def export_mp3(
     audio: AudioSegment,
     out_path: str | Path,
