@@ -13,7 +13,7 @@ An end-to-end AI podcast audio editing app with two modes:
 Backend: FastAPI + Celery + Postgres for the audio pipeline (transcription, DSP, mastering, brand-merge —
 these are plain Python classes orchestrated by Celery, not RocketRide engine nodes; see "Why Celery, not
 RocketRide, runs the audio pipeline" below). Chat-editing runs on the real RocketRide engine, driven via
-the `rocketride` Python SDK. Frontend: Next.js + shadcn/ui.
+the `rocketride` Python SDK. Frontend: Next.js + a hand-rolled Tailwind design system (no shadcn/ui).
 
 ### Why Celery, not RocketRide, runs the audio pipeline
 RocketRide's custom-node model (`IGlobal`/`IInstance`, `write<LaneType>` methods) is built for streaming
@@ -79,10 +79,11 @@ backend/
   api/
     main.py          # FastAPI app entry point
     routes/
-      jobs.py            # POST /api/jobs, GET /api/tasks/{id}/status
+      jobs.py            # POST /api/jobs, POST /api/jobs/{id}/render, GET /api/tasks/{id}/status (debug-only, see ws.py for real status)
       audio.py           # POST /api/upload, GET /api/download/{id}
       chat.py            # POST /api/chat/{job_id}
       internal_tools.py  # /api/internal/tools/* — called by the RocketRide chat agent only
+      ws.py              # GET /ws/jobs/{id} — live job status the frontend actually uses
   nodes/
     transcription_node.py
     auto_cleanup_node.py
@@ -101,6 +102,7 @@ backend/
     edl.py           # EditDecisionList data model
     mastering.py     # noisereduce + Pedalboard + ffmpeg-normalize chain
     auphonic.py      # Auphonic API client (optional)
+  tests/             # pytest — EDL, DSP, mastering, brand-merge regression guard
   requirements.txt
 
 frontend/
@@ -108,22 +110,27 @@ frontend/
     page.tsx         # Upload landing page
     editor/
       page.tsx       # Main editor (transcript + chat + waveform)
+      __tests__/     # Vitest + RTL — WebSocket status handling
   components/
-    ui/              # shadcn components (do not edit)
     editor/
       TranscriptEditor.tsx
-      WaveformPlayer.tsx
+      WaveformPlayer.tsx    # + __tests__/
       EdlPanel.tsx
     chat/
       ChatPanel.tsx
       ChatMessage.tsx
   lib/
-    api.ts           # All fetch calls
+    api.ts           # All fetch calls (+ __tests__/)
     types.ts         # Shared TypeScript types
 
 .rocketride/
-  podcast_pipeline.pipe   # Documents the Celery-orchestrated audio pipeline (not engine-executed)
-  chat_editor.pipe        # Real RocketRide pipeline: chat -> agent_rocketride -> response_answers
+  chat_editor.pipe        # The one real RocketRide pipeline this app runs:
+                           # chat -> agent_rocketride -> response_answers
+
+docs/
+  celery_pipeline.json     # Reference-only architecture doc for the Celery
+                           # audio pipeline (NOT a RocketRide .pipe, not
+                           # engine-executed — see docs/ARCHITECTURE.md)
 ```
 
 ---

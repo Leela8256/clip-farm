@@ -13,7 +13,7 @@ Upload a raw podcast recording and either:
 
 | Layer | Technology |
 |---|---|
-| Frontend | Next.js 14, Tailwind CSS, shadcn/ui |
+| Frontend | Next.js 16, Tailwind CSS, hand-rolled design system (no component library) |
 | API | FastAPI (Python 3.11+) |
 | Task queue | Celery + Redis |
 | Job/chat state | Postgres |
@@ -39,18 +39,21 @@ rocketride-podcasts/
 │   ├── nodes/            # Audio pipeline node classes + the RocketRide-driving chat_editor_node
 │   ├── workers/          # Celery task definitions
 │   ├── db/               # Postgres models (Job, ChatTurn) + session
-│   └── utils/            # Audio DSP helpers (crossfade, EDL, mastering)
+│   ├── utils/            # Audio DSP helpers (crossfade, EDL, mastering)
+│   └── tests/            # pytest suite — EDL, DSP, mastering, brand-merge regression guard
 ├── frontend/
-│   ├── app/              # Next.js App Router pages
-│   ├── components/       # React components (editor, chat, upload)
-│   └── lib/              # API client, types, helpers
+│   ├── app/              # Next.js App Router pages (+ __tests__/)
+│   ├── components/       # React components (editor, chat, upload) (+ __tests__/)
+│   └── lib/              # API client, types, helpers (+ __tests__/)
 ├── assets/
 │   ├── intro/            # Drop your intro.mp3 here
 │   └── outro/            # Drop your outro.mp3 here
 ├── docs/                 # Architecture docs + celery_pipeline.json (non-executable reference)
 ├── .rocketride/          # chat_editor.pipe — the one real RocketRide pipeline this app runs
+├── .github/workflows/    # CI: backend pytest, frontend lint/test/build
 ├── AGENTS.md             # Claude Code bootstrap — read this first
-└── docker-compose.yml    # Redis + Postgres for local dev
+├── docker-compose.yml    # Redis + Postgres + api + worker for local dev
+└── docker-compose.prod.yml  # Production overlay — see "Production" below
 ```
 
 ## Quick start
@@ -110,12 +113,18 @@ Drop `intro.mp3` / `outro.mp3` into `assets/intro/` and `assets/outro/`. If
 present, the pipeline crossfades them onto the episode and re-normalizes the
 mix to spec; if absent, it skips them without erroring.
 
-### 5. Run the tests
+### 5. Run the tests and linter
 
 ```bash
-docker compose run --rm api pytest tests/     # backend
-cd frontend && npm test                        # frontend
+docker compose run --rm api pytest tests/     # backend (30 tests)
+cd frontend && npm test                        # frontend (16 tests)
+cd frontend && npm run lint                    # ESLint (eslint-config-next)
 ```
+
+`.github/workflows/ci.yml` runs all three on every push/PR: the backend job
+builds the Docker image and runs pytest directly against it (no Postgres/Redis
+needed — the suite is pure-logic, see `backend/tests/conftest.py`); the
+frontend job runs `npm ci`, lint, test, and build.
 
 ## Production
 
