@@ -50,6 +50,13 @@ def render(job_id: str):
 
 @router.get("/tasks/{task_id}/status")
 def task_status(task_id: str):
+    """
+    Debug-only endpoint: raw Celery task state, keyed by task_id rather than
+    job_id. Not used by the frontend (job status comes from the WebSocket at
+    /ws/jobs/{job_id}, backed by Postgres — see api/routes/ws.py); kept for
+    ops/debugging a stuck or failed task directly against Celery's own result
+    backend, independent of what got persisted to the Job row.
+    """
     result = AsyncResult(task_id, app=celery_app)
     payload = {"task_id": task_id, "state": result.state}
     if result.state == "PROGRESS":
