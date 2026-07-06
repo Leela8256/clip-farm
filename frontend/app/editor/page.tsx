@@ -83,7 +83,6 @@ function EditorPage() {
     // `mode`/`rendering` are intentionally NOT deps: the handler reads current
     // status directly, and re-subscribing mid-render would drop the fire-and-
     // forget terminal event (Redis pub/sub has no replay).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
 
   const onChat = useCallback(

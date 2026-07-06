@@ -42,13 +42,13 @@ export default function ChatPanel({
           <div className="space-y-2 text-xs text-ink-faint">
             <p>Try:</p>
             <p className="rounded-lg bg-surface-overlay px-3 py-2">
-              "Cut the part where I talked about pricing"
+              &ldquo;Cut the part where I talked about pricing&rdquo;
             </p>
             <p className="rounded-lg bg-surface-overlay px-3 py-2">
-              "Remove the stumble around 12 minutes in"
+              &ldquo;Remove the stumble around 12 minutes in&rdquo;
             </p>
             <p className="rounded-lg bg-surface-overlay px-3 py-2">
-              "List all the cuts you've made so far"
+              &ldquo;List all the cuts you&apos;ve made so far&rdquo;
             </p>
           </div>
         )}

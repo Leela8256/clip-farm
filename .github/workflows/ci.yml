@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t rocketride-podcasts-api ./backend
+
+      # The unit/integration test suite is pure-logic (synthetic audio
+      # generated in-test) and doesn't need Postgres/Redis — see
+      # backend/tests/conftest.py. Run the image directly (not via `docker
+      # compose run`) so the test job doesn't spin up unused service
+      # containers or depend on port availability. Real end-to-end pipeline
+      # runs against actual audio are exercised manually/locally, not in CI,
+      # since they need a multi-GB Whisper model download.
+      - name: Run backend tests
+        run: docker run --rm rocketride-podcasts-api pytest tests/ -v
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
