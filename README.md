@@ -113,8 +113,26 @@ mix to spec; if absent, it skips them without erroring.
 ### 5. Run the tests
 
 ```bash
-docker compose run --rm api pytest tests/
+docker compose run --rm api pytest tests/     # backend
+cd frontend && npm test                        # frontend
 ```
+
+## Production
+
+`docker-compose.prod.yml` layers on top of the base file: no bind-mounts
+(code is baked into images), `restart: unless-stopped`, a 4GB memory limit on
+the worker (Whisper transcription is memory-heavy), Postgres/Redis no longer
+publish host ports, and a containerized frontend (Next standalone build,
+served on `:3000`) is added and wired to reach the API by its Docker service
+name instead of `localhost`.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+Out of scope for this compose file (see AGENTS.md's v1 scope notes): TLS
+termination, a reverse proxy, secrets management beyond `.env`, and
+horizontal scaling beyond a single worker replica.
 
 ## Audio pipeline nodes (Celery-orchestrated)
 
