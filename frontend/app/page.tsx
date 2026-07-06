@@ -31,7 +31,12 @@ export default function UploadPage() {
 
   return (
     <div className="mx-auto max-w-2xl pt-12">
-      <h1 className="text-2xl font-semibold">Edit a podcast episode</h1>
+      <p className="font-mono text-xs uppercase tracking-[0.14em] text-ink-faint">
+        New episode
+      </p>
+      <h1 className="mt-2 font-display text-3xl font-semibold tracking-[-0.02em]">
+        Edit a podcast episode
+      </h1>
       <p className="mt-2 text-ink-dim">
         Upload raw audio. Choose how it gets edited.
       </p>
@@ -65,19 +70,23 @@ export default function UploadPage() {
           const file = e.dataTransfer.files[0];
           if (file) handleFile(file);
         }}
-        className={`mt-6 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-6 py-16 transition-colors ${
-          dragging ? "border-accent bg-accent/5" : "border-line-strong hover:border-ink-faint"
+        className={`mt-6 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-lg border border-dashed px-6 py-16 transition-colors ${
+          dragging
+            ? "border-accent bg-accent/5"
+            : "border-line-strong bg-surface-raised hover:border-ink-faint"
         }`}
       >
         {busy ? (
           <Loader2 className="h-8 w-8 animate-spin text-accent" />
         ) : (
-          <UploadCloud className="h-8 w-8 text-ink-dim" />
+          <UploadCloud className="h-8 w-8 text-ink-faint" />
         )}
         <div className="text-sm text-ink-dim">
           {busy ? "Uploading and starting pipeline…" : "Drop audio here, or click to browse"}
         </div>
-        <div className="text-xs text-ink-faint">MP3, WAV, M4A, FLAC — up to 500MB</div>
+        <div className="font-mono text-xs text-ink-faint">
+          MP3, WAV, M4A, FLAC — up to 500MB
+        </div>
         <input
           type="file"
           accept=".mp3,.wav,.m4a,.flac,.ogg,.aac"
@@ -91,7 +100,7 @@ export default function UploadPage() {
       </label>
 
       {error && (
-        <div className="mt-4 rounded-lg border border-cut/40 bg-cut/10 px-4 py-3 text-sm text-cut">
+        <div className="mt-4 rounded-md border border-danger/40 bg-danger/15 px-4 py-3 text-sm text-danger">
           {error}
         </div>
       )}
@@ -115,10 +124,10 @@ function ModeCard({
   return (
     <button
       onClick={onClick}
-      className={`rounded-xl border p-4 text-left transition-colors ${
+      className={`rounded-lg border p-4 text-left transition-colors ${
         active
           ? "border-accent bg-accent/5"
-          : "border-line bg-surface-raised hover:border-line-strong"
+          : "border-line bg-surface-raised hover:border-line-strong hover:bg-surface-overlay"
       }`}
     >
       <div className={`flex items-center gap-2 ${active ? "text-accent" : "text-ink-dim"}`}>

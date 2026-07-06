@@ -7,7 +7,7 @@ import type { Edl } from "@/lib/types";
 const SOURCE_STYLES: Record<string, string> = {
   auto: "text-ink-faint",
   agent: "text-accent",
-  user: "text-keep",
+  user: "text-ready",
 };
 
 export default function EdlPanel({
@@ -22,9 +22,9 @@ export default function EdlPanel({
   stage?: string;
 }) {
   return (
-    <div className="rounded-xl border border-line bg-surface-raised">
+    <div className="rounded-lg border border-line bg-surface-raised shadow-elev-1">
       <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
-        <span className="text-xs font-medium uppercase tracking-wider text-ink-faint">
+        <span className="font-mono text-xs uppercase tracking-[0.14em] text-ink-faint">
           Edit decision list
         </span>
         <span className="font-mono text-[11px] text-ink-dim">
@@ -41,13 +41,15 @@ export default function EdlPanel({
           <ul className="divide-y divide-line">
             {edl.edits.map((e) => (
               <li key={e.id} className="flex items-start gap-2 px-4 py-2.5 text-xs">
-                <Scissors className="mt-0.5 h-3 w-3 shrink-0 text-cut" />
+                <Scissors className="mt-0.5 h-3 w-3 shrink-0 text-danger" />
                 <div className="min-w-0">
                   <span className="font-mono text-ink-dim">
                     {fmtMs(e.start_ms)}–{fmtMs(e.end_ms)}
                   </span>
                   <span className="ml-2 text-ink">{e.reason}</span>
-                  <span className={`ml-2 ${SOURCE_STYLES[e.source]}`}>{e.source}</span>
+                  <span className={`ml-2 font-mono ${SOURCE_STYLES[e.source]}`}>
+                    {e.source}
+                  </span>
                 </div>
               </li>
             ))}
@@ -59,7 +61,7 @@ export default function EdlPanel({
         <button
           onClick={onRender}
           disabled={rendering}
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent-dim disabled:opacity-50"
+          className="flex w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-2.5 text-sm font-semibold text-ink-inverse transition-colors hover:bg-white disabled:opacity-50"
         >
           {rendering ? (
             <>

@@ -27,8 +27,8 @@ export default function TranscriptEditor({
     cuts.some((c) => start_ms < c.end && end_ms > c.start);
 
   return (
-    <div className="rounded-xl border border-line bg-surface-raised">
-      <div className="border-b border-line px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-ink-faint">
+    <div className="rounded-lg border border-line bg-surface-raised shadow-elev-1">
+      <div className="border-b border-line px-4 py-2.5 font-mono text-xs uppercase tracking-[0.14em] text-ink-faint">
         Transcript · {transcript.segments.length} segments
       </div>
       <div className="max-h-[560px] space-y-4 overflow-y-auto p-4">
@@ -44,7 +44,7 @@ export default function TranscriptEditor({
                       key={i}
                       className={
                         isCut(w.start_ms, w.end_ms)
-                          ? "rounded-sm bg-cut/15 text-cut line-through decoration-cut/60"
+                          ? "rounded-sm bg-danger/15 text-danger line-through decoration-danger/60"
                           : ""
                       }
                     >

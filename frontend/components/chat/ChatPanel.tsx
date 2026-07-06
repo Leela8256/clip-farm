@@ -32,8 +32,8 @@ export default function ChatPanel({
   };
 
   return (
-    <div className="flex h-[420px] flex-col rounded-xl border border-line bg-surface-raised">
-      <div className="border-b border-line px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-ink-faint">
+    <div className="flex h-[420px] flex-col rounded-lg border border-line bg-surface-raised shadow-elev-1">
+      <div className="border-b border-line px-4 py-2.5 font-mono text-xs uppercase tracking-[0.14em] text-ink-faint">
         Editor chat
       </div>
 
@@ -74,12 +74,12 @@ export default function ChatPanel({
           }}
           rows={2}
           placeholder="Describe an edit…"
-          className="flex-1 resize-none rounded-lg border border-line bg-surface px-3 py-2 text-sm placeholder:text-ink-faint focus:border-accent focus:outline-none"
+          className="flex-1 resize-none rounded-md border border-line bg-surface-overlay px-3 py-2 text-sm placeholder:text-ink-faint focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/40"
         />
         <button
           onClick={send}
           disabled={busy || !input.trim()}
-          className="rounded-lg bg-accent p-2.5 text-white transition-colors hover:bg-accent-dim disabled:opacity-40"
+          className="rounded-md bg-ink p-2.5 text-ink-inverse transition-colors hover:bg-white disabled:opacity-40"
           aria-label="Send"
         >
           <SendHorizonal className="h-4 w-4" />

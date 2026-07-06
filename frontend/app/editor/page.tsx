@@ -105,8 +105,8 @@ function EditorPage() {
 
   if (error) {
     return (
-      <div className="rounded-lg border border-cut/40 bg-cut/10 p-6 text-sm">
-        <p className="font-medium text-cut">Pipeline failed</p>
+      <div className="rounded-lg border border-danger/40 bg-danger/15 p-6 text-sm">
+        <p className="font-medium text-danger">Pipeline failed</p>
         <p className="mt-2 font-mono text-xs text-ink-dim">{error}</p>
       </div>
     );
@@ -115,16 +115,19 @@ function EditorPage() {
   if (done) {
     return (
       <div className="mx-auto max-w-xl pt-16 text-center">
-        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-keep/15">
-          <Scissors className="h-6 w-6 text-keep" />
+        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-ready/15">
+          <Scissors className="h-6 w-6 text-ready" />
         </div>
-        <h1 className="mt-6 text-xl font-semibold">Episode ready</h1>
+        <h1 className="mt-6 font-display text-2xl font-semibold tracking-[-0.02em]">
+          Episode ready
+        </h1>
         <p className="mt-2 text-sm text-ink-dim">
-          Mastered to -16 LUFS, intro and outro added, exported as MP3.
+          Mastered to <span className="font-mono text-ink">-16 LUFS</span>, intro and
+          outro added, exported as MP3.
         </p>
         <a
           href={api.downloadUrl(jobId)}
-          className="mt-6 inline-flex items-center gap-2 rounded-lg bg-accent px-5 py-2.5 text-sm font-medium text-white hover:bg-accent-dim"
+          className="mt-6 inline-flex items-center gap-2 rounded-md bg-ink px-5 py-2.5 text-sm font-semibold text-ink-inverse transition-colors hover:bg-white"
         >
           <Download className="h-4 w-4" /> Download final.mp3
         </a>

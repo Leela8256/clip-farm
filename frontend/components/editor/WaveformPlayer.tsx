@@ -30,9 +30,9 @@ export default function WaveformPlayer({ src, edl }: { src: string; edl: Edl | n
     const ws = WaveSurfer.create({
       container: containerRef.current,
       height: 96,
-      waveColor: "#5C636D",
-      progressColor: "#F4633A",
-      cursorColor: "#E8EAED",
+      waveColor: "rgba(255,255,255,0.22)", // --rr-wave, inactive bars
+      progressColor: "#6E8BFF", // --rr-accent, active/played waveform
+      cursorColor: "#F4F4F6", // --rr-text, playhead
       barWidth: 2,
       barGap: 1,
       barRadius: 2,
@@ -69,7 +69,7 @@ export default function WaveformPlayer({ src, edl }: { src: string; edl: Edl | n
       regions.addRegion({
         start: edit.start_ms / 1000,
         end: edit.end_ms / 1000,
-        color: "rgba(226, 75, 74, 0.35)", // cut red, translucent
+        color: "rgba(224, 98, 91, 0.35)", // --rr-wave-cut region, translucent
         drag: false,
         resize: false,
       });
@@ -79,12 +79,12 @@ export default function WaveformPlayer({ src, edl }: { src: string; edl: Edl | n
   const toggle = () => wsRef.current?.playPause();
 
   return (
-    <div className="rounded-xl border border-line bg-surface-raised p-4">
+    <div className="rounded-lg border border-line bg-surface-raised p-4 shadow-elev-1">
       <div className="mb-3 flex items-center gap-3">
         <button
           onClick={toggle}
           disabled={!ready}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-white transition-colors hover:bg-accent-dim disabled:opacity-40"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ink text-ink-inverse transition-colors hover:bg-white disabled:opacity-40"
           aria-label={playing ? "Pause" : "Play"}
         >
           {!ready ? (
@@ -99,7 +99,7 @@ export default function WaveformPlayer({ src, edl }: { src: string; edl: Edl | n
           {fmtMs(current)} / {fmtMs(duration)}
         </span>
         {edl && edl.edits.length > 0 && (
-          <span className="ml-auto text-xs text-cut">
+          <span className="ml-auto font-mono text-xs text-danger">
             {edl.edits.length} cut{edl.edits.length === 1 ? "" : "s"} shown in red
           </span>
         )}
