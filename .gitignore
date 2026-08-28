@@ -8,23 +8,26 @@ venv/
 node_modules/
 .next/
 out/
+frontend/out/
 next-env.d.ts
 
 # Environment
 .env
+frontend/.env.local
 
-# App data
+# Scratch
 tmp/
 *.log
 
-# User-provided brand assets (see assets/*/README.md) — not repo content
-assets/intro/*.mp3
-assets/outro/*.mp3
-
 # OS
 .DS_Store
+
+# RocketRide workspace files — only the app's own pipelines are tracked
 .rocketride/*
-!.rocketride/chat_editor.pipe
+!.rocketride/episode-analysis.pipe
+!.rocketride/clip-preview.pipe
+!.rocketride/clip-export.pipe
 
 # Claude Code
 .claude/scheduled_tasks.lock
+frontend/tsconfig.tsbuildinfo

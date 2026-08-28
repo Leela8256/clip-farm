@@ -1,0 +1,60 @@
+{
+  "title": "Podcast Prepare Clip",
+  "protocol": "podcast_prepare_clip://",
+  "classType": ["text"],
+  "capabilities": [],
+  "register": "filter",
+  "node": "python",
+  "path": "local_nodes.podcast_prepare_clip",
+  "prefix": "podcast_prepare_clip",
+  "description": [
+    "Resolves one clip of an analysed episode (a candidate id from analysis/candidates.json, the user's saved edits, or an explicit start/end) into a render-ready spec: extracts the interval, aligns word timestamps with faster-whisper, snaps the boundaries to word edges, plans pause/filler cuts and writes analysis/clips/<id>.json. The spec goes out on the text lane for podcast_render. Chat context lines: 'project: projects/<episode>', 'clip: c03', optional 'start: <ms>', 'end: <ms>', 'captions: off', 'layouts: vertical,wide'."
+  ],
+  "icon": "podcast-prepare-clip.svg",
+  "documentation": "https://docs.rocketride.org",
+  "lanes": {
+    "questions": ["text"]
+  },
+  "preconfig": {
+    "default": "default",
+    "profiles": {
+      "default": {
+        "model": "small",
+        "language": "en",
+        "pad_seconds": 2,
+        "tighten_pauses": true,
+        "remove_fillers": true
+      }
+    }
+  },
+  "fields": {
+    "podcast_prepare_clip.model": {
+      "type": "string",
+      "title": "Alignment model (faster-whisper)",
+      "default": "small",
+      "enum": [["tiny", "tiny"], ["base", "base"], ["small", "small"], ["medium", "medium"]]
+    },
+    "podcast_prepare_clip.language": { "type": "string", "title": "Language code (blank = detect)", "default": "en" },
+    "podcast_prepare_clip.pad_seconds": { "type": "number", "title": "Alignment padding around the clip (s)", "default": 2 },
+    "podcast_prepare_clip.tighten_pauses": { "type": "boolean", "title": "Tighten long pauses", "default": true },
+    "podcast_prepare_clip.remove_fillers": { "type": "boolean", "title": "Remove um / uh fillers", "default": true },
+    "podcast_prepare_clip.default": {
+      "object": "default",
+      "properties": [
+        "podcast_prepare_clip.model",
+        "podcast_prepare_clip.language",
+        "podcast_prepare_clip.pad_seconds",
+        "podcast_prepare_clip.tighten_pauses",
+        "podcast_prepare_clip.remove_fillers"
+      ]
+    },
+    "podcast_prepare_clip.profile": {
+      "hidden": true,
+      "type": "string",
+      "default": "default",
+      "enum": [["default", "Default"]],
+      "conditional": [{ "value": "default", "properties": ["podcast_prepare_clip.default"] }]
+    }
+  },
+  "shape": [{ "section": "Pipe", "title": "Podcast Prepare Clip", "properties": ["podcast_prepare_clip.profile"] }]
+}

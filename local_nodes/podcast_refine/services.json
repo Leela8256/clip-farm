@@ -1,0 +1,46 @@
+{
+  "title": "Podcast Refine",
+  "protocol": "podcast_refine://",
+  "classType": ["text"],
+  "capabilities": [],
+  "register": "filter",
+  "node": "python",
+  "path": "local_nodes.podcast_refine",
+  "prefix": "podcast_refine",
+  "description": [
+    "Merges the LLM's per-part answers (answers lane) into one ranked, explainable candidate list: snaps every proposal to sentence boundaries, enforces the length limits, removes overlaps, keeps the best N by weighted score (hook / clarity / standalone), dedupes chapters, and writes analysis/candidates.json + chapters.json and the project status. The final manifest is returned on the answers lane."
+  ],
+  "icon": "podcast-refine.svg",
+  "documentation": "https://docs.rocketride.org",
+  "lanes": {
+    "answers": ["answers", "text"],
+    "text": ["answers", "text"]
+  },
+  "preconfig": {
+    "default": "default",
+    "profiles": {
+      "default": {
+        "candidates": 10,
+        "min_seconds": 20,
+        "max_seconds": 90
+      }
+    }
+  },
+  "fields": {
+    "podcast_refine.candidates": { "type": "number", "title": "Candidates to keep", "default": 10 },
+    "podcast_refine.min_seconds": { "type": "number", "title": "Minimum clip length (s)", "default": 20 },
+    "podcast_refine.max_seconds": { "type": "number", "title": "Maximum clip length (s)", "default": 90 },
+    "podcast_refine.default": {
+      "object": "default",
+      "properties": ["podcast_refine.candidates", "podcast_refine.min_seconds", "podcast_refine.max_seconds"]
+    },
+    "podcast_refine.profile": {
+      "hidden": true,
+      "type": "string",
+      "default": "default",
+      "enum": [["default", "Default"]],
+      "conditional": [{ "value": "default", "properties": ["podcast_refine.default"] }]
+    }
+  },
+  "shape": [{ "section": "Pipe", "title": "Podcast Refine", "properties": ["podcast_refine.profile"] }]
+}

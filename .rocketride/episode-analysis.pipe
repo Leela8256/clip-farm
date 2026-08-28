@@ -1,0 +1,209 @@
+{
+  "components": [
+    {
+      "id": "chat_source",
+      "provider": "chat",
+      "config": {
+        "hideForm": true,
+        "mode": "Source",
+        "parameters": {},
+        "type": "chat"
+      },
+      "ui": {
+        "position": {
+          "x": 20,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    },
+    {
+      "id": "ingest",
+      "provider": "podcast_ingest",
+      "config": {
+        "profile": "default",
+        "default": {
+          "chunk_kb": 1024,
+          "piece_seconds": 45
+        },
+        "parameters": {}
+      },
+      "input": [
+        {
+          "lane": "questions",
+          "from": "chat_source"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 240,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    },
+    {
+      "id": "transcribe",
+      "provider": "audio_transcribe",
+      "config": {
+        "profile": "small",
+        "small": {
+          "model": "small",
+          "language": "en",
+          "silence_threshold": 0.25,
+          "min_seconds": 240,
+          "max_seconds": 300,
+          "vad_level": 1
+        },
+        "parameters": {}
+      },
+      "input": [
+        {
+          "lane": "audio",
+          "from": "ingest"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 460,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    },
+    {
+      "id": "segment",
+      "provider": "podcast_segment",
+      "config": {
+        "profile": "default",
+        "default": {
+          "min_seconds": 20,
+          "max_seconds": 90,
+          "per_chunk": 4,
+          "chunk_minutes": 10,
+          "overlap_seconds": 45
+        },
+        "parameters": {}
+      },
+      "input": [
+        {
+          "lane": "documents",
+          "from": "transcribe"
+        },
+        {
+          "lane": "text",
+          "from": "ingest"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 680,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    },
+    {
+      "id": "llm",
+      "provider": "llm_anthropic",
+      "config": {
+        "profile": "claude-sonnet-4-6",
+        "claude-sonnet-4-6": {
+          "apikey": "${ROCKETRIDE_ANTHROPIC_KEY}"
+        },
+        "parameters": {}
+      },
+      "input": [
+        {
+          "lane": "questions",
+          "from": "segment"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 900,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    },
+    {
+      "id": "refine",
+      "provider": "podcast_refine",
+      "config": {
+        "profile": "default",
+        "default": {
+          "candidates": 10,
+          "min_seconds": 20,
+          "max_seconds": 90
+        },
+        "parameters": {}
+      },
+      "input": [
+        {
+          "lane": "answers",
+          "from": "llm"
+        },
+        {
+          "lane": "text",
+          "from": "segment"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 1120,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    },
+    {
+      "id": "response",
+      "provider": "response_answers",
+      "config": {
+        "laneName": "answers"
+      },
+      "input": [
+        {
+          "lane": "answers",
+          "from": "refine"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 1340,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    }
+  ],
+  "project_id": "d9863528-63d5-438c-abbd-74d78d82486c",
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "version": 1
+}

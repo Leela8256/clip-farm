@@ -1,0 +1,4 @@
+# Installed by the engine's depends() when the node loads (engine constraints apply).
+av
+imageio-ffmpeg
+numpy

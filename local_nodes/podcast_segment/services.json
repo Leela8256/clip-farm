@@ -1,0 +1,56 @@
+{
+  "title": "Podcast Segment",
+  "protocol": "podcast_segment://",
+  "classType": ["text"],
+  "capabilities": [],
+  "register": "filter",
+  "node": "python",
+  "path": "local_nodes.podcast_segment",
+  "prefix": "podcast_segment",
+  "description": [
+    "Collects the timestamped transcript sentences produced by audio_transcribe (documents lane) together with the episode reference (text lane), writes analysis/transcript.json, splits the episode into prompt-sized parts and asks the connected LLM (questions lane) to propose and score candidate clips with an explainable rubric (hook / clarity / standalone) plus topical chapters."
+  ],
+  "icon": "podcast-segment.svg",
+  "documentation": "https://docs.rocketride.org",
+  "lanes": {
+    "documents": ["questions", "text"],
+    "text": ["questions", "text"]
+  },
+  "preconfig": {
+    "default": "default",
+    "profiles": {
+      "default": {
+        "min_seconds": 20,
+        "max_seconds": 90,
+        "per_chunk": 4,
+        "chunk_minutes": 10,
+        "overlap_seconds": 45
+      }
+    }
+  },
+  "fields": {
+    "podcast_segment.min_seconds": { "type": "number", "title": "Minimum clip length (s)", "default": 20 },
+    "podcast_segment.max_seconds": { "type": "number", "title": "Maximum clip length (s)", "default": 90 },
+    "podcast_segment.per_chunk": { "type": "number", "title": "Candidates asked per part", "default": 4 },
+    "podcast_segment.chunk_minutes": { "type": "number", "title": "Minutes of transcript per LLM question", "default": 10 },
+    "podcast_segment.overlap_seconds": { "type": "number", "title": "Overlap between parts (s)", "default": 45 },
+    "podcast_segment.default": {
+      "object": "default",
+      "properties": [
+        "podcast_segment.min_seconds",
+        "podcast_segment.max_seconds",
+        "podcast_segment.per_chunk",
+        "podcast_segment.chunk_minutes",
+        "podcast_segment.overlap_seconds"
+      ]
+    },
+    "podcast_segment.profile": {
+      "hidden": true,
+      "type": "string",
+      "default": "default",
+      "enum": [["default", "Default"]],
+      "conditional": [{ "value": "default", "properties": ["podcast_segment.default"] }]
+    }
+  },
+  "shape": [{ "section": "Pipe", "title": "Podcast Segment", "properties": ["podcast_segment.profile"] }]
+}

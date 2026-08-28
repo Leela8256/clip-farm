@@ -1,25 +1,20 @@
-# Production image only — local dev runs `npm run dev` directly on the host.
-# Next's rewrites() resolves API_ORIGIN at build time, so it's a build ARG,
-# not a runtime ENV: docker-compose.prod.yml passes it as a build arg pointing
-# at the `api` service name.
+# Static site image: Next.js `output: "export"` builds plain files into ./out and
+# nginx serves them. No Node process at runtime — the pages talk to the RocketRide
+# engine directly. NEXT_PUBLIC_* values are inlined at build time (build ARGs).
 
 FROM node:20-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-# No public/ directory exists yet in this project — create an empty one so
-# the standalone output has somewhere to serve static assets from later.
 RUN mkdir -p public
-ARG API_ORIGIN=http://api:8000
-ENV API_ORIGIN=${API_ORIGIN}
+ARG NEXT_PUBLIC_ROCKETRIDE_URI=http://127.0.0.1:5567
+ARG NEXT_PUBLIC_ROCKETRIDE_APIKEY=MYAPIKEY
+ENV NEXT_PUBLIC_ROCKETRIDE_URI=${NEXT_PUBLIC_ROCKETRIDE_URI}
+ENV NEXT_PUBLIC_ROCKETRIDE_APIKEY=${NEXT_PUBLIC_ROCKETRIDE_APIKEY}
 RUN npm run build
 
-FROM node:20-slim AS run
-WORKDIR /app
-ENV NODE_ENV=production
-COPY --from=build /app/.next/standalone ./
-COPY --from=build /app/.next/static ./.next/static
-COPY --from=build /app/public ./public
+FROM nginx:alpine AS run
+COPY --from=build /app/out /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 3000
-CMD ["node", "server.js"]

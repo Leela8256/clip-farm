@@ -1,0 +1,88 @@
+{
+  "title": "Podcast Render",
+  "protocol": "podcast_render://",
+  "classType": ["video"],
+  "capabilities": [],
+  "register": "filter",
+  "node": "python",
+  "path": "local_nodes.podcast_render",
+  "prefix": "podcast_render",
+  "description": [
+    "Renders a prepared clip spec (text lane, from podcast_prepare_clip) with the engine's ffmpeg: cleans and masters the audio (-16 LUFS), applies the planned pause/filler cuts, burns word-by-word captions and reframes to 9:16 (blur-pad) and/or 16:9. The 'preview' profile writes a fast low-res MP4 to previews/, the 'export' profile writes full-resolution MP4s, SRT/VTT sidecars, a thumbnail and a report to exports/<clip>/. The render report is returned on the answers lane."
+  ],
+  "icon": "podcast-render.svg",
+  "documentation": "https://docs.rocketride.org",
+  "lanes": {
+    "text": ["answers", "text"]
+  },
+  "preconfig": {
+    "default": "preview",
+    "profiles": {
+      "preview": {
+        "mode": "preview",
+        "size": 960,
+        "layouts": "vertical",
+        "fps": 30,
+        "crf": 28,
+        "preset": "ultrafast",
+        "captions": true,
+        "sidecars": false
+      },
+      "export": {
+        "mode": "export",
+        "size": 1920,
+        "layouts": "vertical,wide",
+        "fps": 30,
+        "crf": 20,
+        "preset": "veryfast",
+        "captions": true,
+        "sidecars": true
+      }
+    }
+  },
+  "fields": {
+    "podcast_render.mode": {
+      "type": "string",
+      "title": "Output folder",
+      "default": "preview",
+      "enum": [["preview", "previews/ (fast, low-res)"], ["export", "exports/ (final)"]]
+    },
+    "podcast_render.size": { "type": "number", "title": "Long edge in pixels (1920 = 1080x1920 / 1920x1080)", "default": 1920 },
+    "podcast_render.layouts": { "type": "string", "title": "Layouts (comma separated: vertical, wide)", "default": "vertical,wide" },
+    "podcast_render.fps": { "type": "number", "title": "Frames per second", "default": 30 },
+    "podcast_render.crf": { "type": "number", "title": "x264 quality (lower = better)", "default": 20 },
+    "podcast_render.preset": {
+      "type": "string",
+      "title": "x264 speed preset",
+      "default": "veryfast",
+      "enum": [["ultrafast", "ultrafast"], ["veryfast", "veryfast"], ["fast", "fast"], ["medium", "medium"]]
+    },
+    "podcast_render.captions": { "type": "boolean", "title": "Burn word-by-word captions", "default": true },
+    "podcast_render.sidecars": { "type": "boolean", "title": "Write SRT / VTT sidecars", "default": true },
+    "podcast_render.preview": {
+      "object": "preview",
+      "properties": [
+        "podcast_render.mode", "podcast_render.size", "podcast_render.layouts", "podcast_render.fps",
+        "podcast_render.crf", "podcast_render.preset", "podcast_render.captions", "podcast_render.sidecars"
+      ]
+    },
+    "podcast_render.export": {
+      "object": "export",
+      "properties": [
+        "podcast_render.mode", "podcast_render.size", "podcast_render.layouts", "podcast_render.fps",
+        "podcast_render.crf", "podcast_render.preset", "podcast_render.captions", "podcast_render.sidecars"
+      ]
+    },
+    "podcast_render.profile": {
+      "type": "string",
+      "title": "Profile",
+      "default": "preview",
+      "enum": [["preview", "Preview"], ["export", "Export"]],
+      "conditional": [
+        { "value": "preview", "properties": ["podcast_render.preview"] },
+        { "value": "export", "properties": ["podcast_render.export"] }
+      ]
+    }
+  },
+  "shape": [{ "section": "Pipe", "title": "Podcast Render", "properties": ["podcast_render.profile"] }]
+}

@@ -1,98 +1,86 @@
 /* ============================================================================
-   rocketride-podcasts — Design Tokens
-   Aesthetic: dark cinematic, waveform-forward, monochrome + one signal accent.
-   Independent analysis of publicly observable "ElevenLabs-style" patterns,
-   applied to the rocketride-podcasts product. Not affiliated with ElevenLabs.
+   Clip Farm — Design Tokens
+   Aesthetic: bright editorial studio. Warm paper surfaces, near-black ink,
+   one hot signal colour (coral) for the things that move, a serif display
+   face for headlines and a quiet grotesk for the interface.
 
-   Source of truth for the Next.js / Tailwind / shadcn codebase. The .dc.html
-   previews mirror these values inline.
+   Variable names are kept from the previous dark system so every component
+   keeps working; only the values (and the mood) change.
    ============================================================================ */
 
 :root {
-  /* ---- Surface ramp (near-black cinematic) ---------------------------- */
-  --rr-bg:            #08080A;   /* app canvas                              */
-  --rr-surface-1:     #0E0E11;   /* panels, cards                          */
-  --rr-surface-2:     #16161A;   /* raised cards, inputs                   */
-  --rr-surface-3:     #1F1F24;   /* hover, active rows                     */
-  --rr-overlay:       rgba(8,8,10,0.72); /* scrims                         */
+  /* ---- Surface ramp (warm paper) -------------------------------------- */
+  --rr-bg:            #F6F1EA;   /* app canvas                              */
+  --rr-surface-1:     #FFFCF8;   /* panels, cards                          */
+  --rr-surface-2:     #F1EBE2;   /* raised cards, inputs                   */
+  --rr-surface-3:     #E8E0D4;   /* hover, active rows                     */
+  --rr-overlay:       rgba(22,19,15,0.55); /* scrims                        */
 
   /* ---- Hairlines & borders ------------------------------------------- */
-  --rr-line:          rgba(255,255,255,0.08);
-  --rr-line-strong:   rgba(255,255,255,0.16);
-  --rr-focus-ring:    rgba(110,139,255,0.55);
+  --rr-line:          rgba(22,19,15,0.10);
+  --rr-line-strong:   rgba(22,19,15,0.22);
+  --rr-focus-ring:    rgba(255,77,46,0.45);
 
   /* ---- Text ---------------------------------------------------------- */
-  --rr-text:          #F4F4F6;   /* primary                                */
-  --rr-text-2:        #A6A6AE;   /* secondary                              */
-  --rr-text-3:        #6E6E77;   /* muted / captions                       */
-  --rr-text-inverse:  #08080A;   /* on light buttons                       */
+  --rr-text:          #16130F;   /* primary ink                            */
+  --rr-text-2:        #5C554C;   /* secondary                              */
+  --rr-text-3:        #8F877C;   /* muted / captions                       */
+  --rr-text-inverse:  #FFFCF8;   /* on ink buttons                         */
 
-  /* ---- Signal accent (playhead, active waveform, focus, links) -------- */
-  /* oklch(0.72 0.14 264) — periwinkle. The one hue in a monochrome system. */
-  --rr-accent:        #6E8BFF;
-  --rr-accent-hover:  #869DFF;
-  --rr-accent-dim:    rgba(110,139,255,0.14);
-  --rr-accent-glow:   rgba(110,139,255,0.35);
+  /* ---- Signal accent (actions, live state, highlights) --------------- */
+  --rr-accent:        #FF4D2E;   /* coral                                  */
+  --rr-accent-hover:  #E63E22;
+  --rr-accent-dim:    rgba(255,77,46,0.12);
+  --rr-accent-glow:   rgba(255,77,46,0.35);
 
-  /* ---- Functional (share L/C, vary hue) ------------------------------ */
-  --rr-ready:         #4FBF8F;   /* broadcast-ready / success  oklch ~150  */
-  --rr-ready-dim:     rgba(79,191,143,0.14);
-  --rr-processing:    #E0A34D;   /* rendering / in-progress    oklch ~70   */
-  --rr-processing-dim: rgba(224,163,77,0.14);
-  --rr-danger:        #E0625B;   /* destructive / failed       oklch ~25   */
-  --rr-danger-dim:    rgba(224,98,91,0.14);
+  /* ---- Functional ---------------------------------------------------- */
+  --rr-ready:         #1E8E5A;   /* success                                */
+  --rr-ready-dim:     rgba(30,142,90,0.12);
+  --rr-processing:    #C27A0A;   /* in progress                            */
+  --rr-processing-dim: rgba(194,122,10,0.12);
+  --rr-danger:        #D3362B;   /* failed                                 */
+  --rr-danger-dim:    rgba(211,54,43,0.12);
 
-  /* ---- Waveform ------------------------------------------------------- */
-  --rr-wave:          rgba(255,255,255,0.22); /* inactive bars             */
-  --rr-wave-played:   var(--rr-accent);       /* scrubbed / active         */
-  --rr-wave-cut:      rgba(224,98,91,0.5);    /* removed region            */
+  /* ---- Waveform (legacy editor) -------------------------------------- */
+  --rr-wave:          rgba(22,19,15,0.22);
+  --rr-wave-played:   var(--rr-accent);
+  --rr-wave-cut:      rgba(211,54,43,0.5);
 
-  /* ---- Buttons (signature: light-on-dark primary) -------------------- */
-  --rr-btn-primary-bg:   #F4F4F6;
-  --rr-btn-primary-fg:   #08080A;
-  --rr-btn-primary-hover:#FFFFFF;
+  /* ---- Buttons (ink on paper) ---------------------------------------- */
+  --rr-btn-primary-bg:   #16130F;
+  --rr-btn-primary-fg:   #FFFCF8;
+  --rr-btn-primary-hover:#2B2620;
 
   /* ---- Type ----------------------------------------------------------- */
-  --rr-font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
-  --rr-font-sans:    "Manrope", ui-sans-serif, system-ui, sans-serif;
-  --rr-font-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+  --rr-font-display: "Fraunces", "Iowan Old Style", Georgia, serif;
+  --rr-font-sans:    "Inter", ui-sans-serif, system-ui, sans-serif;
+  --rr-font-mono:    "JetBrains Mono", ui-monospace, "SF Mono", monospace;
 
-  /* Type scale (1.25 minor-third-ish, 16px root) */
-  --rr-text-display: 3rem;     /* 48 */
-  --rr-text-h1:      2.25rem;  /* 36 */
-  --rr-text-h2:      1.5rem;   /* 24 */
-  --rr-text-h3:      1.125rem; /* 18 */
-  --rr-text-body:    0.9375rem;/* 15 */
-  --rr-text-sm:      0.8125rem;/* 13 */
-  --rr-text-xs:      0.75rem;  /* 12 */
+  --rr-text-display: 3.5rem;
+  --rr-text-h1:      2.5rem;
+  --rr-text-h2:      1.5rem;
+  --rr-text-h3:      1.125rem;
+  --rr-text-body:    0.9375rem;
+  --rr-text-sm:      0.8125rem;
+  --rr-text-xs:      0.75rem;
 
-  --rr-leading-tight: 1.1;
-  --rr-leading-snug:  1.35;
+  --rr-leading-tight: 1.02;
+  --rr-leading-snug:  1.3;
   --rr-leading-body:  1.6;
-  --rr-tracking-tight: -0.02em;
+  --rr-tracking-tight: -0.025em;
   --rr-tracking-caps:  0.14em;
 
-  /* ---- Spacing (4px base) -------------------------------------------- */
-  --rr-space-1: 4px;
-  --rr-space-2: 8px;
-  --rr-space-3: 12px;
-  --rr-space-4: 16px;
-  --rr-space-5: 24px;
-  --rr-space-6: 32px;
-  --rr-space-7: 48px;
-  --rr-space-8: 64px;
-
   /* ---- Radii ---------------------------------------------------------- */
-  --rr-radius-sm:  8px;
-  --rr-radius-md:  12px;
-  --rr-radius-lg:  16px;
-  --rr-radius-xl:  22px;
+  --rr-radius-sm:  10px;
+  --rr-radius-md:  14px;
+  --rr-radius-lg:  20px;
+  --rr-radius-xl:  28px;
   --rr-radius-full: 999px;
 
-  /* ---- Elevation (soft glow on dark, not drop shadows) --------------- */
-  --rr-shadow-1: 0 1px 0 rgba(255,255,255,0.04) inset, 0 8px 24px -16px rgba(0,0,0,0.8);
-  --rr-shadow-2: 0 1px 0 rgba(255,255,255,0.05) inset, 0 24px 60px -30px rgba(0,0,0,0.9);
-  --rr-glow-accent: 0 0 0 1px var(--rr-accent-dim), 0 8px 40px -12px var(--rr-accent-glow);
+  /* ---- Elevation (soft warm shadows) ---------------------------------- */
+  --rr-shadow-1: 0 1px 0 rgba(255,255,255,0.6) inset, 0 10px 30px -18px rgba(22,19,15,0.35);
+  --rr-shadow-2: 0 1px 0 rgba(255,255,255,0.7) inset, 0 30px 70px -30px rgba(22,19,15,0.45);
+  --rr-glow-accent: 0 0 0 1px var(--rr-accent-dim), 0 12px 40px -14px var(--rr-accent-glow);
 }
 
 /* ============================================================================
@@ -106,39 +94,26 @@ body {
   font-size: var(--rr-text-body);
   line-height: var(--rr-leading-body);
   -webkit-font-smoothing: antialiased;
+  background-image:
+    radial-gradient(1200px 600px at 10% -10%, rgba(255,77,46,0.10), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(30,142,90,0.08), transparent 55%);
+  background-attachment: fixed;
 }
 
 /* ============================================================================
    Type utilities
    ============================================================================ */
-.rr-display { font-family: var(--rr-font-display); font-size: var(--rr-text-display); font-weight: 700; line-height: var(--rr-leading-tight); letter-spacing: var(--rr-tracking-tight); }
+.rr-display { font-family: var(--rr-font-display); font-size: var(--rr-text-display); font-weight: 600; line-height: var(--rr-leading-tight); letter-spacing: var(--rr-tracking-tight); font-variation-settings: "opsz" 144, "SOFT" 40; }
 .rr-h1 { font-family: var(--rr-font-display); font-size: var(--rr-text-h1); font-weight: 600; line-height: var(--rr-leading-tight); letter-spacing: var(--rr-tracking-tight); }
 .rr-h2 { font-family: var(--rr-font-display); font-size: var(--rr-text-h2); font-weight: 600; line-height: var(--rr-leading-snug); letter-spacing: var(--rr-tracking-tight); }
 .rr-h3 { font-family: var(--rr-font-sans); font-size: var(--rr-text-h3); font-weight: 600; line-height: var(--rr-leading-snug); }
-.rr-body { font-family: var(--rr-font-sans); font-size: var(--rr-text-body); font-weight: 400; }
-.rr-sm { font-size: var(--rr-text-sm); color: var(--rr-text-2); }
-.rr-mono { font-family: var(--rr-font-mono); font-size: var(--rr-text-xs); letter-spacing: 0; }
 .rr-eyebrow { font-family: var(--rr-font-mono); font-size: var(--rr-text-xs); text-transform: uppercase; letter-spacing: var(--rr-tracking-caps); color: var(--rr-text-3); }
+.rr-mono { font-family: var(--rr-font-mono); font-size: var(--rr-text-xs); }
 
-/* ============================================================================
-   Component primitives
-   ============================================================================ */
-.rr-btn {
-  font-family: var(--rr-font-sans); font-size: var(--rr-text-sm); font-weight: 600;
-  padding: 10px 16px; border-radius: var(--rr-radius-sm); border: 1px solid transparent;
-  cursor: pointer; transition: all .16s ease; display: inline-flex; align-items: center; gap: 8px;
+/* Marquee-ish underline for the headline accent word */
+.rr-underline {
+  background-image: linear-gradient(120deg, var(--rr-accent) 0%, var(--rr-accent) 100%);
+  background-repeat: no-repeat;
+  background-size: 100% 0.18em;
+  background-position: 0 92%;
 }
-.rr-btn-primary { background: var(--rr-btn-primary-bg); color: var(--rr-btn-primary-fg); }
-.rr-btn-primary:hover { background: var(--rr-btn-primary-hover); }
-.rr-btn-ghost { background: transparent; color: var(--rr-text); border-color: var(--rr-line-strong); }
-.rr-btn-ghost:hover { background: var(--rr-surface-2); border-color: var(--rr-text-3); }
-.rr-btn-accent { background: var(--rr-accent); color: #08080A; }
-.rr-btn-accent:hover { background: var(--rr-accent-hover); }
-
-.rr-card { background: var(--rr-surface-1); border: 1px solid var(--rr-line); border-radius: var(--rr-radius-lg); box-shadow: var(--rr-shadow-1); }
-.rr-input { background: var(--rr-surface-2); border: 1px solid var(--rr-line); border-radius: var(--rr-radius-sm); color: var(--rr-text); padding: 10px 12px; font-family: var(--rr-font-sans); font-size: var(--rr-text-sm); outline: none; }
-.rr-input:focus { border-color: var(--rr-accent); box-shadow: 0 0 0 3px var(--rr-accent-dim); }
-
-.rr-chip { font-family: var(--rr-font-mono); font-size: var(--rr-text-xs); padding: 4px 10px; border-radius: var(--rr-radius-full); border: 1px solid var(--rr-line-strong); color: var(--rr-text-2); }
-.rr-badge-ready { color: var(--rr-ready); background: var(--rr-ready-dim); }
-.rr-badge-processing { color: var(--rr-processing); background: var(--rr-processing-dim); }

@@ -1,210 +1,92 @@
 # AGENTS.md — rocketride-podcasts
 
-Claude Code reads this file at session start. Follow every constraint here before writing or editing any code.
-
----
+Read this before changing anything. It is the contract the code follows.
 
 ## What this project is
 
-An end-to-end AI podcast audio editing app with two modes:
-1. **Auto-pilot** — fully automated pipeline (transcribe → clean → master → merge brand assets)
-2. **Chat editing** — a RocketRide-native agent (`agent_rocketride`) edits a non-destructive Edit Decision List via conversation
-
-Backend: FastAPI + Celery + Postgres for the audio pipeline (transcription, DSP, mastering, brand-merge —
-these are plain Python classes orchestrated by Celery, not RocketRide engine nodes; see "Why Celery, not
-RocketRide, runs the audio pipeline" below). Chat-editing runs on the real RocketRide engine, driven via
-the `rocketride` Python SDK. Frontend: Next.js + a hand-rolled Tailwind design system (no shadcn/ui).
-
-### Why Celery, not RocketRide, runs the audio pipeline
-RocketRide's custom-node model (`IGlobal`/`IInstance`, `write<LaneType>` methods) is built for streaming
-document/chat/RAG filters, not long-running stateful jobs with a human-editing loop in the middle. Porting
-transcription/DSP/mastering into that model would mean losing the EDL-as-source-of-truth design and Postgres
-job state for no benefit. RocketRide is used where it fits natively instead: the conversational agent.
-
----
+Clip Farm: a podcast episode goes in, explainable clip candidates, previews and finished
+vertical/wide exports come out. **All processing runs on the RocketRide engine as pipelines**;
+the frontend is a static Next.js site using the `rocketride` SDK in the browser. There is no
+backend of ours — no API server, no Celery, no database. Everything a project needs lives in
+the account file store under `projects/<episode>/` (see `docs/ARCHITECTURE.md`).
 
 ## Hard constraints — never violate these
 
-### Audio pipeline nodes (backend/nodes/)
-- Nodes live in `backend/nodes/`. Every node is a plain Python class — no C++ runtime changes ever.
-- Each node must implement `execute(self, inputs: dict) -> dict` and return a dict of named outputs.
-- Nodes communicate via typed lane values (text, file paths, JSON). Never pass raw audio bytes between nodes — use file paths stored in `tmp/`.
-- Node dependencies go in `backend/requirements.txt`, not anywhere else.
-- These nodes are orchestrated by Celery tasks (`backend/workers/tasks.py`), not the RocketRide engine.
+### Pipelines and nodes (`.rocketride/*.pipe`, `local_nodes/`)
 
-### Chat-editing agent (RocketRide engine)
-- Defined in `.rocketride/chat_editor.pipe`: `chat` source → `agent_rocketride` (control-wired to
-  `llm_anthropic`, `memory_internal`, `tool_http_request`) → `response_answers`.
-- The agent calls back into `backend/api/routes/internal_tools.py` (`/api/internal/tools/*`) to read the
-  transcript and mutate the EDL — it never holds EDL state itself. Postgres remains the source of truth.
-- `backend/nodes/chat_editor_node.py` drives this pipeline via the `rocketride` Python SDK
-  (`RocketRideClient.use()` once, then `client.chat()` per turn). Do not reintroduce a direct Anthropic
-  SDK call here — the LLM call belongs inside the `.pipe` file's `llm_anthropic` node.
+- Use **stock nodes wherever one exists** (`audio_transcribe`, `llm_anthropic`, later
+  `frame_grabber`/`face_detection`, `db_*`). Custom nodes stay small and podcast-specific.
+- Every custom node declares what it imports in its `requirements.txt` (`av`, `imageio-ffmpeg`,
+  `faster-whisper`, …); the engine's `depends()` installs them into the engine runtime when the
+  node loads, under the engine's own constraints. Keep the list minimal and unpinned — a fresh
+  prebuilt engine ships only numpy, so nothing may be assumed present.
+- Never map account-store paths to disk. Read/write through the store API
+  (`podcast_common/store.py`); cache the source locally through `podcast_common/cache.py`.
+- Secrets never reach the browser. The Anthropic key is `${ROCKETRIDE_ANTHROPIC_KEY}` in the
+  pipe and is substituted by the engine from its environment. Do not print or log keys.
+- The stock transcriber stamps sentences relative to the audio buffer it flushed. Keep the
+  ingest node's piece-based hand-off (pieces < 60 s, one `writeAudio` stream each) and derive
+  absolute times from `metadata.source.stream_index` + the piece offsets in the episode
+  reference. Do not "fix" this by trusting `time_stamp` alone.
+- The `answers` lane carries every answer written along the path (the LLM's raw answers reach
+  the response node too). Clients pick the manifest by shape (last payload with `project`).
+- Every node reports progress with `update_status()` (status.json + SSE type `podcast`) and
+  records failures as `stage: "error"` before raising.
+- Edits are non-destructive: `edits/clip-edits.json` is the only place user changes live;
+  candidates.json is never rewritten by the UI.
+- Schemas carry `schema_version`; bump it when a file's shape changes and keep readers tolerant.
 
-### Audio processing
-- Never modify the original uploaded file. Always copy to `tmp/<job_id>/` first.
-- The Edit Decision List (EDL) is the single source of truth. The audio render step reads the EDL and produces output — nothing else mutates audio directly.
-- All cuts must use zero-crossing snapping + crossfade (see `backend/utils/dsp.py`). Hard cuts are not acceptable.
-- Loudness target: **-16 LUFS, -1 dBTP true peak** (AES podcast standard). Do not change this default.
+### Frontend (`frontend/`)
 
-### API
-- All long-running work (transcription, processing, mastering) must go through Celery tasks. Never run blocking audio work inside a FastAPI route directly.
-- Job state (status, stage, transcript, EDL, chat history) lives in Postgres (`backend/db/`) — never reintroduce flat-file job state under `tmp/jobs/`.
-- File uploads are stored in `tmp/uploads/`. Processed outputs go to `tmp/outputs/`.
+- Browser-only and fully static (`output: "export"`): the SDK talks to the engine directly;
+  no `/api` routes, no server actions, no dynamic `[param]` routes (use query params such as
+  `/episode?id=…` behind a `Suspense` boundary). `npm run build` must keep producing `out/`.
+- `lib/podcast.ts` stays free of SDK imports (unit-tested); `lib/engine.ts` is the only module
+  that touches the SDK. Pipeline JSON in `lib/pipelines/` must mirror `.rocketride/*.pipe`.
+- Video players are plain `<video controls playsInline>` with the file's own audio — never
+  `muted`, never autoplay. Show the render report's audio line next to a player.
+- No `setState` synchronously inside `useEffect` bodies (lint rule); defer with a timeout or
+  do it in async callbacks. Keep `react-hooks` lint clean.
+- Keep the design tokens in `app/design-tokens.css` as the source of truth for colours/type.
 
-### Frontend
-- The UI uses a hand-rolled Tailwind design system (see `tailwind.config.ts`: dark theme,
-  warm `accent`, semantic `cut`/`keep` colors). Build new components in that same style and reuse
-  those tokens. Do not introduce shadcn/ui or another component library — none is in use, and mixing
-  systems would fragment the visual language. `frontend/components/ui/` is reserved but currently empty.
-- API calls go through `frontend/lib/api.ts` — never call fetch directly in components.
-- The transcript editor must render word-level timestamps from the transcription response.
-- Job status comes from the WebSocket (`watchJob` in `lib/api.ts`), not polling.
-- Chat history is persisted to Postgres (`chat_turns` table), not just React state.
+### Media
 
-### Environment
-- All secrets come from `.env` (see `.env.example`). Never hardcode API keys.
-- `ROCKETRIDE_URI` / `ROCKETRIDE_APIKEY` are required for chat-editing (auto-populated by the RocketRide
-  VSCode extension when the engine is running). `ROCKETRIDE_ANTHROPIC_KEY` is substituted into
-  `chat_editor.pipe`'s `llm_anthropic` node. `AUPHONIC_API_KEY` is optional — mastering falls back to the
-  local stack if not set.
-- Redis must be running before starting the Celery worker. Postgres must be running before starting the API.
+- Loudness target −16 LUFS integrated / −1 dBTP (two-pass loudnorm); captions are burned in
+  from word timestamps mapped through the keep segments (`TimelineMap`); audio and video are
+  cut from the same keep list so they never drift.
+- Concatenate with `trim`/`concat` — chained `xfade` truncates after the second segment.
 
----
-
-## File map — where things live
+## File map
 
 ```
-backend/
-  api/
-    main.py          # FastAPI app entry point
-    routes/
-      jobs.py            # POST /api/jobs, POST /api/jobs/{id}/render, GET /api/tasks/{id}/status (debug-only, see ws.py for real status)
-      audio.py           # POST /api/upload, GET /api/download/{id}
-      chat.py            # POST /api/chat/{job_id}
-      internal_tools.py  # /api/internal/tools/* — called by the RocketRide chat agent only
-      ws.py              # GET /ws/jobs/{id} — live job status the frontend actually uses
-  nodes/
-    transcription_node.py
-    auto_cleanup_node.py
-    chat_editor_node.py    # drives the RocketRide engine via the rocketride SDK
-    audio_dsp_node.py
-    mastering_node.py
-    brand_merge_node.py
-  workers/
-    celery_app.py    # Celery + Redis config
-    tasks.py         # Task definitions (run_autopilot, render_and_finish)
-  db/
-    models.py        # SQLAlchemy models: Job, ChatTurn
-    session.py        # Engine/session + init_db()
-  utils/
-    dsp.py           # Zero-crossing, crossfade, EDL renderer
-    edl.py           # EditDecisionList data model
-    mastering.py     # noisereduce + Pedalboard + ffmpeg-normalize chain
-    auphonic.py      # Auphonic API client (optional)
-  tests/             # pytest — EDL, DSP, mastering, brand-merge regression guard
-  requirements.txt
-
-frontend/
-  app/
-    page.tsx         # Upload landing page
-    editor/
-      page.tsx       # Main editor (transcript + chat + waveform)
-      __tests__/     # Vitest + RTL — WebSocket status handling
-  components/
-    editor/
-      TranscriptEditor.tsx
-      WaveformPlayer.tsx    # + __tests__/
-      EdlPanel.tsx
-    chat/
-      ChatPanel.tsx
-      ChatMessage.tsx
-  lib/
-    api.ts           # All fetch calls (+ __tests__/)
-    types.ts         # Shared TypeScript types
-
-.rocketride/
-  chat_editor.pipe        # The one real RocketRide pipeline this app runs:
-                           # chat -> agent_rocketride -> response_answers
-
-docs/
-  celery_pipeline.json     # Reference-only architecture doc for the Celery
-                           # audio pipeline (NOT a RocketRide .pipe, not
-                           # engine-executed — see docs/ARCHITECTURE.md)
+.rocketride/episode-analysis.pipe   chat → podcast_ingest → audio_transcribe → podcast_segment → llm_anthropic → podcast_refine → response_answers
+.rocketride/clip-preview.pipe       chat → podcast_prepare_clip → podcast_render[preview] → response_answers
+.rocketride/clip-export.pipe        chat → podcast_prepare_clip → podcast_render[export] → response_answers
+local_nodes/podcast_common/         store · cache · project · media · clips · captions · align · config
+local_nodes/podcast_*/              services.json · IGlobal.py · IInstance.py (one class each)
+local_nodes/tests/                  python -m unittest discover -s local_nodes/tests
+frontend/app/page.tsx               library + new episode
+frontend/app/episode/page.tsx       workspace (/episode?id=…)
+frontend/nginx.conf, Dockerfile     static export served by nginx (no Node server at runtime)
+frontend/components/podcast/        EngineBadge · NewEpisodeForm · StatusTimeline · ChapterStrip · CandidateCard · ClipWorkbench · TranscriptPanel
+frontend/lib/engine.ts              connection, store helpers, runAnalysis/runClip, background runs
+frontend/lib/podcast.ts             types, manifest/report normalisation, status text, formatting
+tools/podcast_run.py                CLI driver (analyze / preview / export / status / get / ls)
+docs/ARCHITECTURE.md                the long version of all of the above
 ```
 
----
+## Testing
 
-## EDL format (critical — do not change schema)
+- `python3 -m unittest discover -s local_nodes/tests -v` — pure logic, no engine.
+- `cd frontend && npm run lint && npm test && npm run build`.
+- End to end: start the engine with `--node_path=<repo>` and run `tools/podcast_run.py` or
+  the UI on a short recording (a 60 s file analyses in ~20 s). Check exports with `ffprobe`
+  (h264 + AAC stereo, expected dimensions) and the report's loudness.
 
-```json
-{
-  "job_id": "string",
-  "source_file": "tmp/uploads/<job_id>/original.mp3",
-  "created_at": "ISO timestamp",
-  "edits": [
-    {
-      "id": "edit_001",
-      "type": "cut",
-      "start_ms": 12400,
-      "end_ms": 15800,
-      "reason": "filler words",
-      "source": "auto | agent | user"
-    }
-  ],
-  "keep_segments": [
-    { "start_ms": 0, "end_ms": 12400 },
-    { "start_ms": 15800, "end_ms": 180000 }
-  ]
-}
-```
+## Not in scope for v1
 
-`keep_segments` is always derived from `edits` — never store it separately, always recompute from the edit list.
-
----
-
-## Chat-editing agent instructions
-
-The agent's behavior is defined by the `instructions` array on the `editor_agent` (`agent_rocketride`)
-component in `.rocketride/chat_editor.pipe` — not a Python-side system prompt. Do not change those
-instructions without keeping this summary in sync:
-
-- Always confirm before applying a cut larger than 60 seconds
-- When the user references a time ("around 12 minutes"), find the nearest natural pause within ±30 seconds
-- When the user describes content ("the part where I talked about X"), search the transcript text and show the matching segment before cutting
-- Never cut mid-word. Always align to word boundaries returned by the transcript tools.
-- After every edit, summarise what changed and the new output runtime
-
-The agent has no direct transcript/EDL access — it reaches both only through the `tool_http_request` node
-wired into its `control` array, which is whitelisted to `backend/api/routes/internal_tools.py`.
-
----
-
-## Key dependencies and why
-
-| Package | Why |
-|---|---|
-| `faster-whisper` | Local Whisper transcription, word timestamps, CPU/GPU |
-| `noisereduce` | Spectral gating noise reduction, no training data needed |
-| `pedalboard` | Spotify's audio DSP — compressor, noise gate, EQ |
-| `ffmpeg-normalize` | Two-pass EBU R128 loudness normalisation, podcast preset |
-| `pydub` | Audio segment manipulation, crossfade, concatenation |
-| `numpy` | Zero-crossing detection |
-| `celery[redis]` | Async task queue for long-running audio jobs |
-| `sqlalchemy` + `psycopg` | Postgres job/transcript/EDL/chat state |
-| `rocketride` | SDK client driving the chat-editing agent on the RocketRide engine |
-
----
-
-## What is not in scope for v1
-
-- Multi-speaker diarization (future: pyannote.audio)
-- Video support
-- Cloud storage (S3 / R2)
-- User authentication
-- Auphonic adaptive leveling (stubbed, available via API key)
-
-<!-- ROCKETRIDE:BEGIN -->
+Speaker diarization, face-tracking 9:16 reframe (planned Stage 1B via stock
+`frame_grabber` + `face_detection`), music beds, a database index of projects, cloud deployment.
 
 # RocketRide — AI Pipeline Builder
 
@@ -233,4 +115,3 @@ Full docs: `.rocketride/docs/`
 2. Read the relevant API doc (Python or TypeScript) for your language
 3. Read `.rocketride/docs/ROCKETRIDE_PIPELINE_RULES.md` + `.rocketride/docs/ROCKETRIDE_COMPONENT_REFERENCE.md`
 4. Read `.rocketride/docs/ROCKETRIDE_COMMON_MISTAKES.md` before finalizing
-<!-- ROCKETRIDE:END -->

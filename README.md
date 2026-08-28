@@ -1,179 +1,155 @@
-# rocketride-podcasts
+# Clip Farm — podcast clips on RocketRide
 
-An end-to-end AI podcast audio editing application built on RocketRide's pipeline infrastructure.
+Upload a raw podcast episode, say what the clips are for, and get explainable clip
+candidates, instant previews and finished vertical + wide exports with captions — with
+**every processing step running as a RocketRide pipeline**. The web app is a fully static
+site (Next.js `output: "export"`: plain HTML/JS served by nginx, S3, or the marketplace
+shell) that talks to the engine from the browser; there is no API server, no Node server,
+no queue and no database of our own.
+
+```
+browser ──(rocketride SDK)──▶ RocketRide engine
+   projects/<episode>/…  ◀──▶ account file store        (source, analysis, previews, exports)
+   episode-analysis.pipe      podcast_ingest → audio_transcribe → podcast_segment → llm_anthropic → podcast_refine
+   clip-preview.pipe          podcast_prepare_clip → podcast_render[preview]
+   clip-export.pipe           podcast_prepare_clip → podcast_render[export]
+```
+
+Stock nodes do the heavy lifting (`audio_transcribe`, `llm_anthropic`); five small custom
+nodes under [`local_nodes/`](local_nodes/) handle the podcast-specific glue. Details:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## What it does
 
-Upload a raw podcast recording and either:
+1. **Analyse an episode** — transcript (sentence timestamps), ~8–10 candidate clips scored on
+   *hook / clarity / standalone* with a one-line reason and the opening quote, plus topical
+   chapters. Directed by your sentence ("funny moments about streaming TV for Reels").
+2. **Review instantly** — every candidate plays straight from the source recording at its
+   time range; the episode map shows chapters and where each candidate sits.
+3. **Edit non-destructively** — nudge the boundaries, rename, toggle captions / pause
+   tightening / filler removal; edits are saved to `edits/clip-edits.json` in your store.
+   Cut your own clip from the transcript by clicking a first and a last sentence.
+4. **Preview** — a fast 540×960 render with cleaned, mastered audio (−16 LUFS) and burned-in
+   word-by-word captions (about 20–30 s).
+5. **Export** — 1080×1920 (blur-pad 9:16) and 1920×1080 MP4s, SRT + VTT sidecars, a thumbnail
+   and a report (dimensions, loudness, audio present), all downloadable from signed engine URLs.
+6. **Library** — every project is a folder in your RocketRide store; reopening it restores the
+   workspace, and an analysis keeps running on the engine if you reload the page.
 
-1. **Auto-pilot mode** — the pipeline automatically transcribes, trims silence/fillers, reduces noise, normalises loudness, and adds your intro/outro. One click, broadcast-ready output.
-2. **Chat editing mode** — talk to a RocketRide-native agent in plain English ("cut the part where I stumbled around 12 minutes in", "remove the tangent about X"). The agent edits a non-destructive Edit Decision List and renders only when you're happy.
+Measured on a 10-minute 720p episode (M-series Mac, `small` Whisper): analysis 102 s
+(transcription 66 s, Claude 36 s) → 7 candidates + 4 chapters; preview 28 s; export 35 s.
 
-## Stack
+## Run it locally
 
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js 16, Tailwind CSS, hand-rolled design system (no component library) |
-| API | FastAPI (Python 3.11+) |
-| Task queue | Celery + Redis |
-| Job/chat state | Postgres |
-| Transcription | faster-whisper (local, CPU/GPU) |
-| Noise reduction | noisereduce + Spotify Pedalboard |
-| Loudness mastering | ffmpeg-normalize (EBU R128, podcast preset) |
-| Audio editing | pydub + ffmpeg |
-| Chat agent | `agent_rocketride` (Claude claude-sonnet-4-6) running on the RocketRide engine |
-| Audio pipeline nodes | Plain Python classes orchestrated by Celery (not RocketRide engine nodes — see `docs/ARCHITECTURE.md`) |
+Prerequisites: Node 20+, pnpm 10, an Anthropic key, and a RocketRide engine build. The engine
+comes from the open-source server repo, cloned **next to this repo** on its `develop` branch
+(`main` is the older 3.3.1 release and lacks the store/stream features these nodes use):
 
-The audio pipeline (transcribe → clean → render → master → brand-merge) runs on Celery, not the
-RocketRide engine — that model fits its long-running, stateful, human-in-the-loop shape better than
-RocketRide's streaming-filter node contract. The chat-editing agent runs on the real RocketRide engine
-instead, since conversational Q&A is exactly what it's built for. See `docs/ARCHITECTURE.md` for the
-full rationale.
+```bash
+cd ..                     # the folder that contains rocketride-podcasts/
+git clone --branch develop https://github.com/rocketride-org/rocketride-server.git
+cd rocketride-server && pnpm install --frozen-lockfile && ./builder server:build
+# → rocketride-server/dist/server/engine (a prebuilt binary is downloaded when one matches the
+#   source; otherwise the builder compiles it — see docs/README-builder.md in that repo)
+```
+
+1. **Start the engine with this repo as its node path** (the folder that contains
+   `local_nodes/`). The engine substitutes `${ROCKETRIDE_ANTHROPIC_KEY}` inside the pipeline
+   itself, so the browser never sees the key; `RR_SIGNING_KEY` enables the signed URLs the UI
+   plays files through; the API key can be anything.
+
+   ```bash
+   cd <rocketride-server>/dist/server
+   ROCKETRIDE_APIKEY=MYAPIKEY ROCKETRIDE_ANTHROPIC_KEY=sk-ant-... RR_SIGNING_KEY=$(openssl rand -hex 32) \
+     ./engine ai/eaas.py --host=127.0.0.1 --port=5567 --node_path=/path/to/rocketride-podcasts
+   ```
+
+   Or let the helper run it as a background service, reading those three values from the repo's
+   `.env` (see `.env.example`) and logging to `.rocketride/engine.log`:
+
+   ```bash
+   tools/engine.sh start      # also: restart | stop | status | logs
+   ```
+
+   (`ROCKETRIDE_SERVER_DIR` overrides the engine location, `ROCKETRIDE_ENGINE_PORT` the port.)
+
+2. **Start the frontend** — either
+
+   ```bash
+   cd frontend && npm install && npm run dev      # http://localhost:3000
+   ```
+
+   or with Docker: `docker compose up -d --build` (builds the static export and serves it with
+   nginx). `npm run build` alone writes the deployable site to `frontend/out/` for any static
+   host. The page connects to `NEXT_PUBLIC_ROCKETRIDE_URI` with `NEXT_PUBLIC_ROCKETRIDE_APIKEY`
+   (defaults `http://127.0.0.1:5567` / `MYAPIKEY`, inlined at build time; see
+   `frontend/.env.local.example`). Episode pages are `/episode?id=<episode>`.
+
+3. Drop a recording, pick a direction, press **Analyze the episode**. You land in the
+   workspace while the pipeline runs; candidates appear when it finishes.
+
+4. **Pipeline editor (VS Code extension).** The extension starts its *own* development engine,
+   which doesn't know the custom `podcast_*` nodes unless it gets the same node path — until then
+   the `.pipe` files look disconnected in the editor. Add to your VS Code settings and restart the
+   engine (Command Palette → RocketRide: restart / reload window):
+
+   ```json
+   "rocketride.development.local.engineArgs": "--node_path=/absolute/path/to/rocketride-podcasts"
+   ```
+
+   Alternatively point the extension at the engine you started in step 1
+   (`rocketride.development.connectionMode: "host"`, `hostUrl: http://127.0.0.1:5567`).
+
+Without the UI, `tools/podcast_run.py` drives the same pipelines from the command line
+(`pip install rocketride`):
+
+```bash
+python tools/podcast_run.py analyze episode.mp4 my-episode "funny moments" 8
+python tools/podcast_run.py preview my-episode c01
+python tools/podcast_run.py export  my-episode c01
+python tools/podcast_run.py get projects/my-episode/exports/c01/c01_vertical.mp4 out.mp4
+```
 
 ## Project structure
 
 ```
-rocketride-podcasts/
-├── backend/
-│   ├── api/              # FastAPI routes (incl. internal_tools.py for the chat agent)
-│   ├── nodes/            # Audio pipeline node classes + the RocketRide-driving chat_editor_node
-│   ├── workers/          # Celery task definitions
-│   ├── db/               # Postgres models (Job, ChatTurn) + session
-│   ├── utils/            # Audio DSP helpers (crossfade, EDL, mastering)
-│   └── tests/            # pytest suite — EDL, DSP, mastering, brand-merge regression guard
-├── frontend/
-│   ├── app/              # Next.js App Router pages (+ __tests__/)
-│   ├── components/       # React components (editor, chat, upload) (+ __tests__/)
-│   └── lib/              # API client, types, helpers (+ __tests__/)
-├── assets/
-│   ├── intro/            # Drop your intro.mp3 here
-│   └── outro/            # Drop your outro.mp3 here
-├── docs/                 # Architecture docs + celery_pipeline.json (non-executable reference)
-├── .rocketride/          # chat_editor.pipe — the one real RocketRide pipeline this app runs
-├── .github/workflows/    # CI: backend pytest, frontend lint/test/build
-├── AGENTS.md             # Claude Code bootstrap — read this first
-├── docker-compose.yml    # Redis + Postgres + api + worker for local dev
-└── docker-compose.prod.yml  # Production overlay — see "Production" below
+.rocketride/            episode-analysis.pipe · clip-preview.pipe · clip-export.pipe
+local_nodes/
+  podcast_common/       shared code: store, project layout, media (ffmpeg), clips, captions, align, cache
+  podcast_ingest/       source → media.json + audio pieces for the stock transcriber
+  podcast_segment/      sentences → transcript.json + rubric questions for the LLM
+  podcast_refine/       LLM answers → ranked candidates.json + chapters.json
+  podcast_prepare_clip/ candidate/edit → word-aligned clip spec with cuts
+  podcast_render/       clip spec → preview or export files (+ report)
+  tests/                unit tests for the pure logic (python -m unittest)
+frontend/               static site (next build → out/), served by nginx in Docker
+  app/page.tsx          library + new episode
+  app/episode/page.tsx  workspace (/episode?id=…): status, episode map, candidates, clip workbench, transcript
+  components/podcast/   UI pieces
+  lib/engine.ts         browser ↔ engine (store, pipelines, live progress, background runs)
+  lib/podcast.ts        types + pure helpers (tested with vitest)
+  lib/pipelines/        the .pipe files as JSON, sent with use({pipeline})
+tools/podcast_run.py    command-line driver for the pipelines
+docs/ARCHITECTURE.md    pipelines, nodes, project directory, status model
 ```
 
-## Quick start
-
-The backend (API + Celery worker + Redis + Postgres) runs in Docker — the
-pinned scientific packages (faster-whisper, pedalboard, noisereduce) want
-Python 3.11, and containers avoid host-interpreter drift. The frontend runs
-natively via `npm`.
-
-### Prerequisites
-
-- Docker + Docker Compose
-- Node.js 20+ and `ffmpeg` on the host (for the frontend / local tinkering)
-- RocketRide VS Code extension installed, with the RocketRide engine running locally
-  (the app connects to it for chat-editing — see `.rocketride/chat_editor.pipe`)
-- An Anthropic API key with credit (used by the `llm_anthropic` node inside `chat_editor.pipe`)
-
-### 1. Clone and configure
+## Tests
 
 ```bash
-git clone <your-repo>
-cd rocketride-podcasts
-cp .env.example .env
-# Edit .env — set ROCKETRIDE_APIKEY and ROCKETRIDE_ANTHROPIC_KEY.
-# ROCKETRIDE_URI defaults to the local engine; the api/worker containers
-# override it to host.docker.internal automatically (see docker-compose.yml).
+python3 -m unittest discover -s local_nodes/tests -v   # node logic: chunking, parsing, snapping, captions
+cd frontend && npm run lint && npm test && npm run build
 ```
 
-> **Ports:** compose maps Redis to host `6380` and Postgres to `5433` (not the
-> defaults 6379/5432) to avoid colliding with other local projects. Container-to-
-> container traffic still uses the standard internal ports.
+End-to-end runs need the engine and a recording — use `tools/podcast_run.py` or the UI.
 
-### 2. Start the backend stack
+## Notes
 
-```bash
-docker compose up -d --build
-# Brings up: redis, postgres, api (:8000), worker
-docker compose ps                     # all should be Up / healthy
-curl localhost:8000/api/health        # {"status":"ok"}
-```
-
-On first run the worker downloads the faster-whisper `medium` model
-(~1.5 GB) the first time a job transcribes — subsequent runs are cached.
-
-### 3. Start the frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-# Open http://localhost:3000  (proxies /api and /ws to the backend on :8000)
-```
-
-### 4. Add your brand assets (optional)
-
-Drop `intro.mp3` / `outro.mp3` into `assets/intro/` and `assets/outro/`. If
-present, the pipeline crossfades them onto the episode and re-normalizes the
-mix to spec; if absent, it skips them without erroring.
-
-### 5. Run the tests and linter
-
-```bash
-docker compose run --rm api pytest tests/     # backend (30 tests)
-cd frontend && npm test                        # frontend (16 tests)
-cd frontend && npm run lint                    # ESLint (eslint-config-next)
-```
-
-`.github/workflows/ci.yml` runs all three on every push/PR: the backend job
-builds the Docker image and runs pytest directly against it (no Postgres/Redis
-needed — the suite is pure-logic, see `backend/tests/conftest.py`); the
-frontend job runs `npm ci`, lint, test, and build.
-
-## Production
-
-`docker-compose.prod.yml` layers on top of the base file: no bind-mounts
-(code is baked into images), `restart: unless-stopped`, a 4GB memory limit on
-the worker (Whisper transcription is memory-heavy), Postgres/Redis no longer
-publish host ports, and a containerized frontend (Next standalone build,
-served on `:3000`) is added and wired to reach the API by its Docker service
-name instead of `localhost`.
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-```
-
-Out of scope for this compose file (see AGENTS.md's v1 scope notes): TLS
-termination, a reverse proxy, secrets management beyond `.env`, and
-horizontal scaling beyond a single worker replica.
-
-## Audio pipeline nodes (Celery-orchestrated)
-
-These are plain Python classes in `backend/nodes/`, chained by Celery tasks in `backend/workers/tasks.py`.
-`docs/celery_pipeline.json` documents the wiring for reference — it is not a RocketRide `.pipe` file and
-is not executed by the RocketRide engine.
-
-| Node | File | Purpose |
-|---|---|---|
-| `TranscriptionNode` | `nodes/transcription_node.py` | faster-whisper, word-level timestamps |
-| `AutoCleanupNode` | `nodes/auto_cleanup_node.py` | Silence/filler detection, auto EDL |
-| `AudioDSPNode` | `nodes/audio_dsp_node.py` | Crossfade, zero-crossing cuts, pydub rendering |
-| `MasteringNode` | `nodes/mastering_node.py` | noisereduce + Pedalboard + ffmpeg-normalize |
-| `BrandMergeNode` | `nodes/brand_merge_node.py` | Intro/outro stitching |
-
-## Chat-editing agent (real RocketRide pipeline)
-
-Open `.rocketride/chat_editor.pipe` in VS Code with the RocketRide extension to view the visual
-pipeline: `chat` source → `agent_rocketride` (wired to `llm_anthropic`, `memory_internal`, and
-`tool_http_request`) → `response_answers`. `backend/nodes/chat_editor_node.py` starts this pipeline via
-the `rocketride` Python SDK and relays each chat turn to it. The agent never holds transcript/EDL state
-itself — it calls back into `/api/internal/tools/*` (`backend/api/routes/internal_tools.py`), which reads
-and mutates the same Postgres-backed EDL the render pipeline uses.
-
-## Auphonic (optional upgrade)
-
-Set `AUPHONIC_API_KEY` in `.env` to route mastering through Auphonic instead of the local stack. The `MasteringNode` detects the key and switches automatically.
-
-## Loudness targets
-
-| Platform | Target LUFS | True peak |
-|---|---|---|
-| Spotify Podcasts | -14 LUFS | -1 dBTP |
-| Apple Podcasts | -16 LUFS | -1 dBTP |
-| Default (this app) | -16 LUFS | -1 dBTP |
+- Each node lists its Python dependencies in its `requirements.txt` (`av`, `imageio-ffmpeg` —
+  ffmpeg 7 with libx264/libass/loudnorm — and `faster-whisper` for word alignment); the engine
+  installs them into its own runtime the first time the node loads. Nothing to pip-install by hand.
+- Loudness is mastered to −16 LUFS integrated / −1 dBTP. A mono-read meter shows about
+  −19 LUFS for the same file (dual-mono convention) — not a bug.
+- Test footage used during development (Cordkillers) is CC BY-NC: test use only.
+- Deploying to an organisation: publish the three pipelines to the team's engine
+  (`client.deploy.publish(...)`), ship `local_nodes/podcast_*` with the engine's nodes, and point
+  `NEXT_PUBLIC_ROCKETRIDE_URI` at that engine.
