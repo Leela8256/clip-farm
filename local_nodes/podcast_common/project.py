@@ -1,20 +1,24 @@
 """
-Project directory layout in the account file store (from the implementation
-brief) plus status/progress helpers shared by every podcast_* node.
+Project directory layout in the account file store plus status/progress
+helpers shared by every podcast_* node.
 
 projects/<episode>/
-  source/<file>           original upload
+  source/<file>                    original upload
+  project.json                     settings + provenance — reopening it rebuilds the workspace
+  status.json                      latest stage, written by every node as it works
   analysis/media.json, transcript.json, windows.json, candidates.json, chapters.json
-  analysis/clips/<id>.json  prepared clip spec (boundaries, words, cuts)
-  previews/<id>.mp4       fast 9:16 preview + <id>.json report
-  exports/<id>/...        final renders, SRT/VTT, thumbnail, report.json
-  edits/clip-edits.json   non-destructive edits written by the UI
-  project.json            settings + provenance — reopening it rebuilds the workspace
-  status.json             latest stage, written by every node as it works
+  analysis/index.json              what was sent to the semantic index (passages)
+  analysis/requests/<rNN>.json     one Prompt Director request: prompt, spec, candidates, compliance
+  analysis/clips/<id>/plan.json    prepared clip: boundaries, words, cuts, fit report
+  analysis/clips/<id>/compliance.json
+  previews/<id>.mp4                fast 9:16 preview + <id>.json report
+  exports/<id>/...                 final renders, SRT/VTT, thumbnail, report.json
+  edits/clip-edits.json            non-destructive edits written by the UI (versions, restored cuts)
 """
 
 from __future__ import annotations
 import json
+import re
 import time
 from typing import Any
 
@@ -27,8 +31,9 @@ try:
 except Exception:  # noqa: BLE001
     monitorSSE = None
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 PARTIAL_TRANSCRIPT = 'transcript.partial.json'
+_REQUEST_CLIP_RE = re.compile(r'^(r\d+)c\d+$')
 
 
 class Project:
@@ -47,7 +52,24 @@ class Project:
     def analysis(self, name: str) -> str:
         return f'{self.root}/analysis/{name}'
 
+    @property
+    def requests_dir(self) -> str:
+        return f'{self.root}/analysis/requests'
+
+    def request(self, request_id: str) -> str:
+        return f'{self.requests_dir}/{request_id}.json'
+
+    def clip_dir(self, clip_id: str) -> str:
+        return f'{self.root}/analysis/clips/{clip_id}'
+
+    def clip_plan(self, clip_id: str) -> str:
+        return f'{self.clip_dir(clip_id)}/plan.json'
+
+    def clip_compliance(self, clip_id: str) -> str:
+        return f'{self.clip_dir(clip_id)}/compliance.json'
+
     def clip_spec(self, clip_id: str) -> str:
+        """Schema-1 location of the prepared clip (read as a fallback only)."""
         return f'{self.root}/analysis/clips/{clip_id}.json'
 
     def previews(self, name: str) -> str:
@@ -61,6 +83,12 @@ class Project:
 
     def to_ref(self, **extra) -> dict:
         return {'project': self.root, 'episode_id': self.episode_id, **extra}
+
+
+def request_id_of(clip_id: str) -> str | None:
+    """'r03c02' -> 'r03'; None for analysis candidates (c02) and hand-made clips (x53-96)."""
+    m = _REQUEST_CLIP_RE.match(clip_id or '')
+    return m.group(1) if m else None
 
 
 def parse_ref(text: str) -> dict | None:
@@ -106,6 +134,32 @@ def read_json_or(store, path: str, default: Any) -> Any:
         return read_json(store, path)
     except Exception:  # noqa: BLE001
         return default
+
+
+def find_candidate(store, project: Project, clip_id: str) -> tuple[dict, dict | None]:
+    """
+    The candidate behind a clip id and, for Prompt Director clips, the request
+    it came from (so its spec drives the edit). Analysis candidates live in
+    candidates.json; request candidates inside their request file.
+    """
+    request_id = request_id_of(clip_id)
+    if request_id:
+        request = read_json_or(store, project.request(request_id), None)
+        if isinstance(request, dict):
+            for cand in request.get('candidates') or []:
+                if cand.get('id') == clip_id:
+                    return cand, request
+        return {}, request if isinstance(request, dict) else None
+    candidates = (read_json_or(store, project.analysis('candidates.json'), {}) or {}).get('candidates') or []
+    return next((c for c in candidates if c.get('id') == clip_id), {}), None
+
+
+def load_clip_plan(store, project: Project, clip_id: str) -> dict | None:
+    plan = read_json_or(store, project.clip_plan(clip_id), None)
+    if isinstance(plan, dict):
+        return plan
+    legacy = read_json_or(store, project.clip_spec(clip_id), None)
+    return legacy if isinstance(legacy, dict) else None
 
 
 def update_status(store, project: Project | None, node: str, stage: str, pipe_id: int | None = None, **data: Any) -> None:

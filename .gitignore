@@ -25,6 +25,12 @@ tmp/
 # RocketRide workspace files — only the app's own pipelines are tracked
 .rocketride/*
 !.rocketride/episode-analysis.pipe
+!.rocketride/transcript-index.pipe
+!.rocketride/transcript-search.pipe
+!.rocketride/director-chat.pipe
+!.rocketride/prompt-director.pipe
+!.rocketride/prompt-director-full.pipe
+!.rocketride/visual-scan.pipe
 !.rocketride/clip-preview.pipe
 !.rocketride/clip-export.pipe
 

@@ -1,0 +1,56 @@
+{
+  "components": [
+    {
+      "id": "chat_source",
+      "provider": "chat",
+      "config": { "hideForm": true, "mode": "Source", "parameters": {}, "type": "chat" },
+      "ui": { "position": { "x": 20, "y": 200 }, "measured": { "width": 150, "height": 66 } }
+    },
+    {
+      "id": "ingest",
+      "provider": "podcast_ingest",
+      "config": { "profile": "default", "default": { "chunk_kb": 1024, "piece_seconds": 45 }, "parameters": {} },
+      "input": [{ "lane": "questions", "from": "chat_source" }],
+      "ui": { "position": { "x": 240, "y": 200 }, "measured": { "width": 150, "height": 66 } }
+    },
+    {
+      "id": "segment",
+      "provider": "podcast_segment",
+      "config": {
+        "profile": "default",
+        "default": { "min_seconds": 20, "max_seconds": 90, "per_chunk": 4, "chunk_minutes": 10, "overlap_seconds": 45, "passage_seconds": 60, "passage_step_seconds": 30 },
+        "parameters": {}
+      },
+      "input": [{ "lane": "text", "from": "ingest" }],
+      "ui": { "position": { "x": 460, "y": 200 }, "measured": { "width": 150, "height": 66 } }
+    },
+    {
+      "id": "embed",
+      "provider": "embedding_transformer",
+      "config": { "profile": "miniLM", "parameters": {} },
+      "input": [{ "lane": "documents", "from": "segment" }],
+      "ui": { "position": { "x": 680, "y": 200 }, "measured": { "width": 150, "height": 66 } }
+    },
+    {
+      "id": "index",
+      "provider": "qdrant",
+      "config": {
+        "profile": "local",
+        "local": { "host": "localhost", "port": 6333, "collection": "podcast_transcripts", "score": 0.2, "serverName": "qdrant" },
+        "parameters": {}
+      },
+      "input": [{ "lane": "documents", "from": "embed" }],
+      "ui": { "position": { "x": 900, "y": 200 }, "measured": { "width": 150, "height": 135 } }
+    },
+    {
+      "id": "response",
+      "provider": "response_text",
+      "config": { "laneName": "text" },
+      "input": [{ "lane": "text", "from": "segment" }],
+      "ui": { "position": { "x": 900, "y": 380 }, "measured": { "width": 150, "height": 66 } }
+    }
+  ],
+  "project_id": "dc456536-cb60-47df-ae05-7df3621ea9d9",
+  "viewport": { "x": 0, "y": 0, "zoom": 1 },
+  "version": 1
+}

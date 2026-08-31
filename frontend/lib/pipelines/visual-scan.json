@@ -1,0 +1,177 @@
+{
+  "components": [
+    {
+      "id": "chat_source",
+      "provider": "chat",
+      "config": {
+        "hideForm": true,
+        "mode": "Source",
+        "parameters": {},
+        "type": "chat"
+      },
+      "ui": {
+        "position": {
+          "x": 20,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    },
+    {
+      "id": "ingest",
+      "provider": "podcast_ingest",
+      "config": {
+        "profile": "default",
+        "default": {
+          "chunk_kb": 1024,
+          "piece_seconds": 45
+        },
+        "parameters": {}
+      },
+      "input": [
+        {
+          "lane": "questions",
+          "from": "chat_source"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 240,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    },
+    {
+      "id": "frames",
+      "provider": "frame_grabber",
+      "config": {
+        "profile": "interval",
+        "interval": {
+          "interval": 2,
+          "start_time": 0,
+          "duration": 0,
+          "watermark": "no"
+        },
+        "parameters": {}
+      },
+      "input": [
+        {
+          "lane": "video",
+          "from": "ingest"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 460,
+          "y": 80
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    },
+    {
+      "id": "faces",
+      "provider": "pose_estimation",
+      "config": {
+        "profile": "rtmpose-medium",
+        "rtmpose-medium": {
+          "threshold": 0.3,
+          "max_persons": 8
+        },
+        "parameters": {}
+      },
+      "input": [
+        {
+          "lane": "image",
+          "from": "frames"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 680,
+          "y": 80
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    },
+    {
+      "id": "visual",
+      "provider": "podcast_visual",
+      "config": {
+        "profile": "default",
+        "default": {
+          "sample_seconds": 2,
+          "scenes": true,
+          "scene_threshold": 0.35
+        },
+        "parameters": {}
+      },
+      "input": [
+        {
+          "lane": "text",
+          "from": "ingest"
+        },
+        {
+          "lane": "text",
+          "from": "faces"
+        },
+        {
+          "lane": "table",
+          "from": "frames"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 900,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    },
+    {
+      "id": "response",
+      "provider": "response_answers",
+      "config": {
+        "laneName": "answers"
+      },
+      "input": [
+        {
+          "lane": "answers",
+          "from": "visual"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 1120,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    }
+  ],
+  "project_id": "839ea7d7-f503-4b5b-9ed9-c9cd9069262a",
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "version": 1
+}

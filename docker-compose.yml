@@ -1,7 +1,12 @@
-# The whole app is the static frontend: every processing step runs on the
-# RocketRide engine, which you start on the host (see README.md). The browser
-# talks to the engine directly, so the container only needs to know where the
-# engine is reachable *from the browser* (build-time NEXT_PUBLIC_* values).
+# The app is the static frontend plus the RocketRide engine's own pipelines.
+# The engine runs on the host (see README.md); the browser talks to it
+# directly, so the frontend container only needs to know where the engine is
+# reachable *from the browser* (build-time NEXT_PUBLIC_* values).
+#
+# Qdrant is the transcript index used by the stock `qdrant` store node in the
+# prompt-director / transcript-index / transcript-search pipelines — the
+# RocketRide docs' recommended local vector store. In a hosted deployment the
+# same pipelines can swap the node for `rocketride_vector` (no service to run).
 #
 #   docker compose up -d --build
 #   open http://localhost:3000
@@ -16,3 +21,14 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "${ROCKETRIDE_QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant-storage:/qdrant/storage
+
+volumes:
+  qdrant-storage:

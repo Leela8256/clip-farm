@@ -2,10 +2,19 @@
  * Browser-side RocketRide integration for the podcast clip studio.
  *
  * There is no backend of ours in the path: the page talks to the engine over
- * the SDK's WebSocket. Recordings go into the account file store, the three
- * pipelines (episode analysis, clip preview, clip export) are started with
- * their JSON definitions, one chat question runs a job with live progress on
- * the 'podcast' SSE channel, and every result is read back from the store.
+ * the SDK's WebSocket. Recordings go into the account file store, the
+ * pipelines are started with their JSON definitions, one chat question runs a
+ * job with live progress on the 'podcast' SSE channel, and every result is
+ * read back from the store.
+ *
+ * Pipelines (mirrors of .rocketride/*.pipe):
+ *   episode-analysis   upload → transcript → scored candidates + chapters
+ *   transcript-index   transcript passages → embedding_transformer → qdrant
+ *   transcript-search  question → embedding → qdrant → passages (stock only)
+ *   director-chat      question → llm_anthropic (prompt parsing, revisions)
+ *   prompt-director    question → embedding → qdrant → llm → podcast_refine
+ *   prompt-director-full  the same without the index (transcript in context)
+ *   clip-preview / clip-export
  *
  * Secrets never reach the browser: the pipeline JSON keeps its
  * `${ROCKETRIDE_ANTHROPIC_KEY}` placeholder and the engine substitutes it from
@@ -23,17 +32,42 @@ import { RocketRideClient, Question } from "rocketride";
 import analysisPipe from "./pipelines/episode-analysis.json";
 import previewPipe from "./pipelines/clip-preview.json";
 import exportPipe from "./pipelines/clip-export.json";
+import chatPipe from "./pipelines/director-chat.json";
+import directorPipe from "./pipelines/prompt-director.json";
+import directorFullPipe from "./pipelines/prompt-director-full.json";
+import indexPipe from "./pipelines/transcript-index.json";
+import searchPipe from "./pipelines/transcript-search.json";
+import visualPipe from "./pipelines/visual-scan.json";
 import {
+  firstJsonAnswer,
   pickManifest,
   projectRoot,
   toCandidates,
   toChapters,
   toReport,
   type AnalysisManifest,
+  type Candidate,
   type PipeKind,
   type RenderReport,
+  type Sentence,
   type StatusEvent,
 } from "./podcast";
+import {
+  buildDirectQuestion,
+  buildParseQuestion,
+  buildReviseQuestion,
+  durationWindow,
+  nextRequestId,
+  normalizeSpec,
+  searchQueryOf,
+  transcriptLines,
+  type ClipPlan,
+  type DirectorRequest,
+  type RejectedCandidate,
+  type RequestCompliance,
+  type RequestSpec,
+  type Revision,
+} from "./director";
 
 export const ENGINE_URI = process.env.NEXT_PUBLIC_ROCKETRIDE_URI ?? "http://127.0.0.1:5567";
 export const ENGINE_APIKEY = process.env.NEXT_PUBLIC_ROCKETRIDE_APIKEY ?? "MYAPIKEY";
@@ -45,7 +79,17 @@ const KEEPALIVE_MS = 20_000;
 type UseOptions = NonNullable<Parameters<RocketRideClient["use"]>[0]>;
 type PipelineConfig = NonNullable<UseOptions["pipeline"]>;
 
-const PIPES: Record<PipeKind, unknown> = { analysis: analysisPipe, preview: previewPipe, export: exportPipe };
+const PIPES: Record<PipeKind, unknown> = {
+  analysis: analysisPipe,
+  preview: previewPipe,
+  export: exportPipe,
+  chat: chatPipe,
+  director: directorPipe,
+  "director-full": directorFullPipe,
+  index: indexPipe,
+  search: searchPipe,
+  visual: visualPipe,
+};
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -367,11 +411,8 @@ async function pipelineToken(kind: PipeKind): Promise<string> {
 
 export type ProgressHandler = (evt: StatusEvent) => void;
 
-async function runQuestion(kind: PipeKind, context: string[], text: string, onProgress?: ProgressHandler): Promise<unknown> {
+async function runPrepared(kind: PipeKind, question: Question, onProgress?: ProgressHandler): Promise<unknown> {
   const token = await pipelineToken(kind);
-  const question = new Question();
-  question.addContext(context.join("\n"));
-  question.addQuestion(text || "go");
   return withClient(
     (c) =>
       c.chat({
@@ -383,6 +424,20 @@ async function runQuestion(kind: PipeKind, context: string[], text: string, onPr
       }),
     0
   );
+}
+
+async function runQuestion(kind: PipeKind, context: string[], text: string, onProgress?: ProgressHandler): Promise<unknown> {
+  const question = new Question();
+  question.addContext(context.join("\n"));
+  question.addQuestion(text || "go");
+  return runPrepared(kind, question, onProgress);
+}
+
+/** A fresh SDK Question whose filter object exists (the builders write into it). */
+function newQuestion(): Question {
+  const q = new Question();
+  if (!q.filter) (q as unknown as { filter: Record<string, unknown> }).filter = {};
+  return q;
 }
 
 /** Episode analysis: transcript → scored candidates + chapters, persisted under the project. */
@@ -406,8 +461,10 @@ export interface ClipRequest {
   start_ms?: number;
   end_ms?: number;
   title?: string;
-  captions?: boolean;
+  /** caption preset name, or "off" */
+  captions?: string;
   layouts?: string;
+  version?: number | null;
 }
 
 /** Render one clip as a fast preview or a final export. Explicit times override saved edits. */
@@ -416,10 +473,209 @@ export async function runClip(kind: "preview" | "export", episodeId: string, req
   if (req.start_ms != null) context.push(`start: ${Math.round(req.start_ms)}`);
   if (req.end_ms != null) context.push(`end: ${Math.round(req.end_ms)}`);
   if (req.title) context.push(`title: ${req.title.replace(/\n/g, " ")}`);
-  if (req.captions === false) context.push("captions: off");
+  if (req.captions) context.push(`captions: ${req.captions}`);
   if (req.layouts) context.push(`layouts: ${req.layouts}`);
+  if (req.version != null) context.push(`version: ${req.version}`);
   const result = await runQuestion(kind, context, `${kind} ${req.clipId}`, onProgress);
   return toReport(pickManifest(result) ?? {});
+}
+
+// ------------------------------------------------------------ Prompt Director
+
+export interface ParsedPrompt {
+  prompt: string;
+  raw: Record<string, unknown>;
+  spec: RequestSpec;
+  searchQuery: string;
+}
+
+/** Step 1 — the stock LLM turns the producer's sentence into a spec (director-chat pipe). */
+export async function runParse(prompt: string, onProgress?: ProgressHandler): Promise<ParsedPrompt> {
+  const q = buildParseQuestion(newQuestion(), prompt);
+  const result = await runPrepared("chat", q, onProgress);
+  const raw = firstJsonAnswer(result) ?? {};
+  if (typeof raw.error === "string") throw new Error(raw.error);
+  const spec = normalizeSpec(raw);
+  return { prompt, raw, spec, searchQuery: searchQueryOf(raw, spec, prompt) };
+}
+
+/** Persist a parsed prompt as analysis/requests/<rNN>.json (the node fills it in when the run completes). */
+export async function createRequest(episodeId: string, parsed: ParsedPrompt): Promise<DirectorRequest> {
+  const root = projectRoot(episodeId);
+  const entries = await listDir(`${root}/analysis/requests`);
+  const request: DirectorRequest = {
+    schema_version: 1,
+    request_id: nextRequestId(entries.map((e) => e.name)),
+    prompt: parsed.prompt,
+    raw: parsed.raw,
+    spec: parsed.spec,
+    search_query: parsed.searchQuery,
+    status: "parsed",
+    created: Date.now() / 1000,
+  };
+  await writeJson(`${root}/analysis/requests/${request.request_id}.json`, request);
+  return request;
+}
+
+export interface DirectorResult {
+  request_id: string;
+  candidates: Candidate[];
+  rejected: RejectedCandidate[];
+  compliance: RequestCompliance | null;
+  notes: string[];
+  summary?: string;
+  proposed?: number;
+  seconds?: number;
+  mode: "index" | "full";
+  error?: string;
+}
+
+/**
+ * Step 2 — find and validate the clips. With a transcript index the question
+ * flows through embedding_transformer → qdrant (scoped to this episode) → llm
+ * → podcast_refine; without one the transcript rides in the question context.
+ */
+export async function runDirector(
+  episodeId: string,
+  request: DirectorRequest,
+  useIndex: boolean,
+  sentences: Sentence[],
+  onProgress?: ProgressHandler
+): Promise<DirectorResult> {
+  const root = projectRoot(episodeId);
+  const spec = normalizeSpec(request.spec);
+  const q = buildDirectQuestion(newQuestion(), {
+    prompt: request.prompt,
+    spec,
+    window: durationWindow(spec),
+    projectRoot: root,
+    requestId: request.request_id,
+    episodeId,
+    searchQuery: request.search_query,
+    transcriptLines: useIndex ? null : transcriptLines(sentences),
+  });
+  const result = await runPrepared(useIndex ? "director" : "director-full", q, onProgress);
+  const m = pickManifest(result) ?? {};
+  return {
+    request_id: String(m.request_id ?? request.request_id),
+    candidates: toCandidates(m),
+    rejected: Array.isArray(m.rejected) ? (m.rejected as RejectedCandidate[]) : [],
+    compliance: m.compliance && typeof m.compliance === "object" ? (m.compliance as RequestCompliance) : null,
+    notes: Array.isArray(m.notes) ? m.notes.map(String) : [],
+    summary: typeof m.summary === "string" ? m.summary : undefined,
+    proposed: typeof m.proposed === "number" ? m.proposed : undefined,
+    seconds: typeof m.seconds === "number" ? m.seconds : undefined,
+    mode: useIndex ? "index" : "full",
+    error: typeof m.error === "string" ? m.error : undefined,
+  };
+}
+
+export interface SearchHit {
+  score: number;
+  text: string;
+  start_ms: number;
+  end_ms: number;
+  passage: number;
+}
+
+/** Semantic search over the episode's transcript passages (transcript-search pipe: stock nodes only). */
+export async function runSearch(episodeId: string, query: string, limit = 6): Promise<SearchHit[]> {
+  const q = newQuestion();
+  q.filter.objectIds = [episodeId];
+  q.filter.limit = limit;
+  q.addQuestion(query);
+  const result = (await runPrepared("search", q)) as { documents?: unknown[] };
+  const docs = Array.isArray(result?.documents) ? result.documents : [];
+  return docs.map((raw) => {
+    const d = (raw ?? {}) as Record<string, unknown>;
+    const md = (d.metadata ?? {}) as Record<string, unknown>;
+    return {
+      score: typeof d.score === "number" ? d.score : 0,
+      text: String(d.page_content ?? ""),
+      start_ms: typeof md.start_ms === "number" ? md.start_ms : 0,
+      end_ms: typeof md.end_ms === "number" ? md.end_ms : 0,
+      passage: typeof md.chunkId === "number" ? md.chunkId : 0,
+    };
+  });
+}
+
+export interface IndexResult {
+  ok: boolean;
+  passages?: number;
+  error?: string;
+}
+
+/**
+ * Build (or rebuild) the episode's transcript index: transcript-index pipe
+ * (podcast_segment passages → embedding_transformer → qdrant), then a search
+ * probe proves the store answers. The verdict is recorded in project.json.
+ */
+export async function runIndex(episodeId: string, onProgress?: ProgressHandler): Promise<IndexResult> {
+  const root = projectRoot(episodeId);
+  let verdict: IndexResult;
+  try {
+    await runQuestion("index", [`project: ${root}`], "index", onProgress);
+    const hits = await runSearch(episodeId, "the main topic of this episode", 1);
+    const index = await readJsonOr<{ passages?: number } | null>(`${root}/analysis/index.json`, null);
+    verdict = hits.length ? { ok: true, passages: index?.passages } : { ok: false, error: "the index answered with no passages" };
+  } catch (e) {
+    verdict = { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  const project = await readJsonOr<Record<string, unknown> | null>(`${root}/project.json`, null);
+  if (project) {
+    project.index = verdict.ok
+      ? { status: "indexed", passages: verdict.passages, indexed_at: Date.now() / 1000 }
+      : { status: "failed", error: verdict.error, indexed_at: Date.now() / 1000 };
+    await writeJson(`${root}/project.json`, project);
+  }
+  return verdict;
+}
+
+export interface VisualScanResult {
+  ok: boolean;
+  people?: number;
+  scenes?: number;
+  error?: string;
+}
+
+/**
+ * The episode's visual scan (visual-scan pipe: podcast_ingest streams the video →
+ * frame_grabber → pose_estimation → podcast_visual): people on screen with
+ * thumbnails and shot changes, recorded in project.json by the node.
+ */
+export async function runVisualScan(episodeId: string, onProgress?: ProgressHandler): Promise<VisualScanResult> {
+  const root = projectRoot(episodeId);
+  try {
+    const result = await runQuestion("visual", [`project: ${root}`], "scan", onProgress);
+    const m = pickManifest(result) ?? {};
+    if (typeof m.error === "string") throw new Error(m.error);
+    return { ok: true, people: Array.isArray(m.people) ? m.people.length : undefined, scenes: typeof m.scenes === "number" ? m.scenes : undefined };
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    const project = await readJsonOr<Record<string, unknown> | null>(`${root}/project.json`, null);
+    if (project) {
+      project.visual = { status: "failed", error, scanned_at: Date.now() / 1000 };
+      await writeJson(`${root}/project.json`, project);
+    }
+    return { ok: false, error };
+  }
+}
+
+/** Conversational revision of one prepared clip (director-chat pipe); the caller applies the change as a new version. */
+export async function runRevise(
+  episodeId: string,
+  clipId: string,
+  instruction: string,
+  plan: ClipPlan,
+  sentences: Sentence[],
+  candidates: Candidate[]
+): Promise<Revision> {
+  const q = buildReviseQuestion(newQuestion(), { instruction, projectRoot: projectRoot(episodeId), clipId, plan, sentences, candidates });
+  const result = await runPrepared("chat", q);
+  const raw = firstJsonAnswer(result);
+  if (!raw) throw new Error("The model did not return a revision.");
+  if (typeof raw.error === "string") throw new Error(raw.error);
+  return raw as unknown as Revision;
 }
 
 // --------------------------------------------------------- background runs

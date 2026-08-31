@@ -8,13 +8,13 @@
   "path": "local_nodes.podcast_segment",
   "prefix": "podcast_segment",
   "description": [
-    "Collects the timestamped transcript sentences produced by audio_transcribe (documents lane) together with the episode reference (text lane), writes analysis/transcript.json, splits the episode into prompt-sized parts and asks the connected LLM (questions lane) to propose and score candidate clips with an explainable rubric (hook / clarity / standalone) plus topical chapters."
+    "Collects the timestamped transcript sentences produced by audio_transcribe (documents lane) together with the episode reference (text lane) and writes analysis/transcript.json. Then, per wired listener: splits the episode into prompt-sized parts and asks the connected LLM (questions lane) to propose and score candidate clips with an explainable rubric (hook / clarity / standalone) plus topical chapters; and/or emits overlapping, sentence-aligned transcript passages (documents lane) for the semantic index built by embedding_transformer + a stock vector store. With no transcriber wired it reuses the stored transcript (transcript-index pipe)."
   ],
   "icon": "podcast-segment.svg",
   "documentation": "https://docs.rocketride.org",
   "lanes": {
-    "documents": ["questions", "text"],
-    "text": ["questions", "text"]
+    "documents": ["questions", "documents", "text"],
+    "text": ["questions", "documents", "text"]
   },
   "preconfig": {
     "default": "default",
@@ -24,7 +24,9 @@
         "max_seconds": 90,
         "per_chunk": 4,
         "chunk_minutes": 10,
-        "overlap_seconds": 45
+        "overlap_seconds": 45,
+        "passage_seconds": 60,
+        "passage_step_seconds": 30
       }
     }
   },
@@ -34,6 +36,8 @@
     "podcast_segment.per_chunk": { "type": "number", "title": "Candidates asked per part", "default": 4 },
     "podcast_segment.chunk_minutes": { "type": "number", "title": "Minutes of transcript per LLM question", "default": 10 },
     "podcast_segment.overlap_seconds": { "type": "number", "title": "Overlap between parts (s)", "default": 45 },
+    "podcast_segment.passage_seconds": { "type": "number", "title": "Index passage length (s)", "default": 60 },
+    "podcast_segment.passage_step_seconds": { "type": "number", "title": "Index passage step (s)", "default": 30 },
     "podcast_segment.default": {
       "object": "default",
       "properties": [
@@ -41,7 +45,9 @@
         "podcast_segment.max_seconds",
         "podcast_segment.per_chunk",
         "podcast_segment.chunk_minutes",
-        "podcast_segment.overlap_seconds"
+        "podcast_segment.overlap_seconds",
+        "podcast_segment.passage_seconds",
+        "podcast_segment.passage_step_seconds"
       ]
     },
     "podcast_segment.profile": {

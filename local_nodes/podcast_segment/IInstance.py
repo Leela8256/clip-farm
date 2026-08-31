@@ -1,13 +1,21 @@
 """
-podcast_segment — the bridge between the stock transcriber and the stock LLM.
+podcast_segment — the bridge between the stock transcriber and the stock
+LLM / embedding nodes.
 
 Collects audio_transcribe's sentence documents (documents lane) and the
 episode reference from podcast_ingest (text lane). Every batch of sentences
 is persisted to analysis/transcript.partial.json with absolute times, so a
 run that is cut short can be resumed piece by piece. On close it writes
-analysis/transcript.json, splits the transcript into prompt-sized parts and
-emits one rubric question per part on the questions lane; llm_anthropic
-answers each with candidate clips + chapters, which podcast_refine merges.
+analysis/transcript.json and then, per wired listener:
+
+  questions   one rubric question per ~10-minute part (llm_anthropic answers
+              with candidate clips + chapters, which podcast_refine merges)
+  documents   overlapping, sentence-aligned passages of the transcript for
+              the semantic index (embedding_transformer -> a stock vector
+              store), keyed by the episode id
+
+When no transcriber is wired (the transcript-index pipe) the node reads the
+transcript the analysis already wrote instead of transcribing again.
 """
 
 from __future__ import annotations
@@ -20,8 +28,9 @@ from rocketlib import IInstanceBase, Entry, warning, debug
 from ai.common.schema import Question, QuestionType
 
 from local_nodes.podcast_common.store import get_store, write_json
-from local_nodes.podcast_common.project import PARTIAL_TRANSCRIPT, Project, parse_ref, read_json_or, update_status
+from local_nodes.podcast_common.project import PARTIAL_TRANSCRIPT, Project, load_project, parse_ref, read_json_or, save_project, update_status
 from local_nodes.podcast_common.clips import chunk_sentences, fmt_timestamp, sentence_lines
+from local_nodes.podcast_common.passages import EMBED_MODEL_HINT, STEP_MS, WINDOW_MS, passage_documents, window_passages
 
 from .IGlobal import IGlobal
 
@@ -251,19 +260,29 @@ class IInstance(IInstanceBase):
         for s in self._sentences:
             self._place(s)
         sentences = sorted(self._prior + self._sentences, key=lambda s: (s['start_ms'], s.get('chunk', 0)))
-        # the stock transcriber only reports starts: a sentence ends where the next begins
-        for i, s in enumerate(sentences):
-            nxt = sentences[i + 1]['start_ms'] if i + 1 < len(sentences) else (duration_ms or s['start_ms'] + 5000)
-            s['end_ms'] = max(nxt, s['start_ms'] + 500)
-            s['id'] = i
-        done = sorted(self._prior_done | {int(s['piece']) for s in self._sentences})
-        write_json(store, project.analysis('transcript.json'),
-                   {'schema_version': 1, 'source': self._ref.get('source'), 'granularity': 'sentence',
-                    'duration_ms': duration_ms, 'pieces': pieces, 'pieces_done': done, 'sentences': sentences})
-        write_json(store, project.analysis(PARTIAL_TRANSCRIPT),
-                   {'schema_version': 1, 'source': self._ref.get('source'), 'piece_seconds': pieces.get('seconds'),
-                    'pieces_total': pieces.get('total'), 'pieces_done': list(range(int(pieces.get('total') or 0))) or done,
-                    'complete': True, 'updated': time.time(), 'sentences': sentences})
+        transcribed_now = bool(self._sentences) or bool(self._prior)
+        if transcribed_now:
+            # the stock transcriber only reports starts: a sentence ends where the next begins
+            for i, s in enumerate(sentences):
+                nxt = sentences[i + 1]['start_ms'] if i + 1 < len(sentences) else (duration_ms or s['start_ms'] + 5000)
+                s['end_ms'] = max(nxt, s['start_ms'] + 500)
+                s['id'] = i
+            done = sorted(self._prior_done | {int(s['piece']) for s in self._sentences})
+            write_json(store, project.analysis('transcript.json'),
+                       {'schema_version': 1, 'source': self._ref.get('source'), 'granularity': 'sentence',
+                        'duration_ms': duration_ms, 'pieces': pieces, 'pieces_done': done, 'sentences': sentences})
+            write_json(store, project.analysis(PARTIAL_TRANSCRIPT),
+                       {'schema_version': 1, 'source': self._ref.get('source'), 'piece_seconds': pieces.get('seconds'),
+                        'pieces_total': pieces.get('total'), 'pieces_done': list(range(int(pieces.get('total') or 0))) or done,
+                        'complete': True, 'updated': time.time(), 'sentences': sentences})
+        else:
+            # no transcriber in this pipe (transcript-index): reuse the analysis transcript
+            transcript = read_json_or(store, project.analysis('transcript.json'), {}) or {}
+            sentences = transcript.get('sentences') or []
+            duration_ms = duration_ms or int(transcript.get('duration_ms') or 0)
+            if not sentences:
+                raise ValueError(f'{NODE}: no transcript for {project.root} — run the episode analysis first')
+            debug(f'{NODE}: reusing the stored transcript ({len(sentences)} sentences)')
 
         min_s = int(settings.get('min_seconds') or cfg['min_seconds'])
         max_s = int(settings.get('max_seconds') or cfg['max_seconds'])
@@ -272,22 +291,49 @@ class IInstance(IInstanceBase):
         chunks = chunk_sentences(sentences, int(cfg['chunk_minutes']) * 60_000, int(cfg['overlap_seconds']) * 1000)
         # ask for enough proposals overall that refine can be picky
         per_part = min(8, max(int(cfg['per_chunk']), math.ceil(want * 1.5 / max(1, len(chunks)))))
-        write_json(store, project.analysis('windows.json'),
-                   {'schema_version': 1, 'chunk_minutes': cfg['chunk_minutes'], 'overlap_seconds': cfg['overlap_seconds'],
-                    'per_part': per_part, 'document_calls': self._calls, 'resumed_sentences': len(self._prior),
-                    'sample_metadata': self._sample_metadata,
-                    'parts': [{'index': i, 'start_ms': c[0]['start_ms'], 'end_ms': c[-1]['end_ms'], 'sentences': len(c)}
-                              for i, c in enumerate(chunks)]})
-        update_status(store, project, NODE, 'transcribed', pipe, sentences=len(sentences), parts=len(chunks),
-                      duration_ms=duration_ms, resumed=len(self._prior), seconds=round(time.time() - self._t0, 1))
+        if transcribed_now:
+            write_json(store, project.analysis('windows.json'),
+                       {'schema_version': 1, 'chunk_minutes': cfg['chunk_minutes'], 'overlap_seconds': cfg['overlap_seconds'],
+                        'per_part': per_part, 'document_calls': self._calls, 'resumed_sentences': len(self._prior),
+                        'sample_metadata': self._sample_metadata,
+                        'parts': [{'index': i, 'start_ms': c[0]['start_ms'], 'end_ms': c[-1]['end_ms'], 'sentences': len(c)}
+                                  for i, c in enumerate(chunks)]})
+            update_status(store, project, NODE, 'transcribed', pipe, sentences=len(sentences), parts=len(chunks),
+                          duration_ms=duration_ms, resumed=len(self._prior), seconds=round(time.time() - self._t0, 1))
+
+        if self.instance.hasListener('documents'):
+            self._index(store, project, pipe, sentences)
 
         if self.instance.hasListener('questions'):
             for i, chunk in enumerate(chunks):
                 update_status(store, project, NODE, 'scoring', pipe, part=i + 1, parts=len(chunks),
                               start_ms=chunk[0]['start_ms'], end_ms=chunk[-1]['end_ms'])
                 self.instance.writeQuestions(build_question(chunk, i, len(chunks), goal, per_part, min_s, max_s))
-        else:
-            warning(f'{NODE}: no LLM wired to the questions lane — candidates will not be scored')
+        elif not self.instance.hasListener('documents'):
+            warning(f'{NODE}: neither an LLM (questions) nor an index (documents) is wired to this node')
 
         if self.instance.hasListener('text'):
             self.instance.writeText(json.dumps({**self._ref, 'transcript': {'sentences': len(sentences), 'parts': len(chunks)}}))
+
+    def _index(self, store, project: Project, pipe, sentences: list[dict]) -> None:
+        """Passages for the semantic index; the stock embedding + store nodes downstream do the rest."""
+        cfg = self.IGlobal.config
+        window_ms = int(cfg.get('passage_seconds') or WINDOW_MS // 1000) * 1000
+        step_ms = int(cfg.get('passage_step_seconds') or STEP_MS // 1000) * 1000
+        passages = window_passages(sentences, window_ms, step_ms)
+        update_status(store, project, NODE, 'indexing', pipe, passages=len(passages), window_seconds=window_ms // 1000)
+        docs = passage_documents(passages, project.episode_id, project.root, NODE)
+        if docs:
+            self.instance.writeDocuments(docs)
+        write_json(store, project.analysis('index.json'),
+                   {'schema_version': 1, 'episode_id': project.episode_id, 'passages': len(passages),
+                    'window_ms': window_ms, 'step_ms': step_ms, 'embedding_model': EMBED_MODEL_HINT,
+                    'requested_at': time.time(),
+                    'items': [{k: p[k] for k in ('index', 'start_ms', 'end_ms', 'sentence_ids')} for p in passages]})
+        try:
+            data = load_project(store, project)
+            data['index'] = {'status': 'indexed', 'passages': len(passages), 'indexed_at': time.time()}
+            save_project(store, project, data)
+        except Exception as exc:  # noqa: BLE001
+            debug(f'{NODE}: could not record the index in project.json: {exc}')
+        update_status(store, project, NODE, 'indexed', pipe, passages=len(passages))

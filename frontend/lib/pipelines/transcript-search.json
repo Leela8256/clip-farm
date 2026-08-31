@@ -1,0 +1,38 @@
+{
+  "components": [
+    {
+      "id": "chat_source",
+      "provider": "chat",
+      "config": { "hideForm": true, "mode": "Source", "parameters": {}, "type": "chat" },
+      "ui": { "position": { "x": 20, "y": 200 }, "measured": { "width": 150, "height": 66 } }
+    },
+    {
+      "id": "embed",
+      "provider": "embedding_transformer",
+      "config": { "profile": "miniLM", "parameters": {} },
+      "input": [{ "lane": "questions", "from": "chat_source" }],
+      "ui": { "position": { "x": 240, "y": 200 }, "measured": { "width": 150, "height": 66 } }
+    },
+    {
+      "id": "index",
+      "provider": "qdrant",
+      "config": {
+        "profile": "local",
+        "local": { "host": "localhost", "port": 6333, "collection": "podcast_transcripts", "score": 0.2, "serverName": "qdrant" },
+        "parameters": {}
+      },
+      "input": [{ "lane": "questions", "from": "embed" }],
+      "ui": { "position": { "x": 460, "y": 200 }, "measured": { "width": 150, "height": 135 } }
+    },
+    {
+      "id": "response",
+      "provider": "response_documents",
+      "config": { "laneName": "documents" },
+      "input": [{ "lane": "documents", "from": "index" }],
+      "ui": { "position": { "x": 680, "y": 200 }, "measured": { "width": 150, "height": 66 } }
+    }
+  ],
+  "project_id": "f700935c-5eaa-43d8-88dc-d2fdf63a3303",
+  "viewport": { "x": 0, "y": 0, "zoom": 1 },
+  "version": 1
+}

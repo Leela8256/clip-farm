@@ -150,17 +150,32 @@ def keep_segments(cuts: list[tuple[int, int]], total_ms: int, min_keep_ms: int =
     return keep or [(0, total_ms)]
 
 
-def _audio_graph(segments_ms: list[tuple[int, int]]) -> str:
-    """atrim + de-click fades + concat, then the mastering chain, ending in [pre]."""
+def _audio_graph(segments_ms: list[tuple[int, int]], mutes_ms: list[tuple[int, int]] | None = None) -> str:
+    """
+    atrim + de-click fades + concat, then the mastering chain, ending in [pre].
+    Muted ranges (a filler kept in the picture but silenced) are zeroed on the
+    source timeline before the cuts, with tiny ramps so the mute never clicks.
+    """
     parts = []
+    n = len(segments_ms)
+    source = '[0:a]'
+    if mutes_ms:
+        ramp = DECLICK_FADE_S
+        volume = ','.join(
+            f"volume=enable='between(t,{s / 1000:.3f},{e / 1000:.3f})':volume=0:eval=frame"
+            for s, e in mutes_ms if e > s
+        )
+        parts.append(f'[0:a]{volume},asplit={n}' + ''.join(f'[m{i}]' for i in range(n)))
+        source = None
+        del ramp
     for i, (start, end) in enumerate(segments_ms):
         length = (end - start) / 1000
         fade_out_at = max(0.0, length - DECLICK_FADE_S)
+        src = source if source else f'[m{i}]'
         parts.append(
-            f'[0:a]atrim=start={start / 1000:.3f}:end={end / 1000:.3f},asetpts=PTS-STARTPTS,'
+            f'{src}atrim=start={start / 1000:.3f}:end={end / 1000:.3f},asetpts=PTS-STARTPTS,'
             f'afade=t=in:d={DECLICK_FADE_S},afade=t=out:st={fade_out_at:.3f}:d={DECLICK_FADE_S}[a{i}]'
         )
-    n = len(segments_ms)
     if n > 1:
         parts.append(''.join(f'[a{i}]' for i in range(n)) + f'concat=n={n}:v=0:a=1[cat]')
         cat = '[cat]'
@@ -184,14 +199,15 @@ def _loudnorm_stats(stderr: str) -> dict | None:
         return None
 
 
-def render_audio(src_wav: str | Path, segments_ms: list[tuple[int, int]], out_wav: str | Path) -> Path:
+def render_audio(src_wav: str | Path, segments_ms: list[tuple[int, int]], out_wav: str | Path,
+                 mutes_ms: list[tuple[int, int]] | None = None) -> Path:
     """
     Cut, clean and master a clip's audio with ffmpeg only. Two-pass EBU R128
     loudnorm to -16 LUFS / -1 dBTP (linear when the measurement allows it,
     ffmpeg's dynamic mode otherwise).
     """
     out_wav = Path(out_wav)
-    graph = _audio_graph(segments_ms)
+    graph = _audio_graph(segments_ms, mutes_ms)
     base = f'loudnorm=I={LOUDNESS_TARGET_LUFS}:TP={TRUE_PEAK_DBTP}:LRA={LOUDNESS_RANGE_LU}'
 
     measure = subprocess.run(
@@ -237,6 +253,42 @@ def measure_loudness(path: str | Path) -> dict | None:
         }
     except (KeyError, ValueError):
         return None
+
+
+_RMS_RE = re.compile(r'RMS level dB:\s*(-?[\d.]+|-inf)')
+
+
+def rms_level(path: str | Path, at_ms: int, window_ms: int = 60) -> float | None:
+    """RMS level (dBFS) of a short window starting at at_ms; None when unmeasurable."""
+    if at_ms < 0:
+        return None
+    result = subprocess.run(
+        [ffmpeg_exe(), '-hide_banner', '-nostdin', '-ss', f'{at_ms / 1000:.3f}', '-t', f'{window_ms / 1000:.3f}',
+         '-i', str(path), '-af', 'astats=metadata=0:measure_perchannel=none:measure_overall=RMS_level', '-f', 'null', '-'],
+        capture_output=True, text=True,
+    )
+    values = _RMS_RE.findall(result.stderr or '')
+    if not values:
+        return None
+    value = values[-1]
+    return -120.0 if value == '-inf' else float(value)
+
+
+def measure_levels(path: str | Path, ranges: list[tuple[int, int]], window_ms: int = 60) -> dict[int, float]:
+    """
+    The loudness just before and just after each cut range, keyed by the
+    range's start (level before) and end (level after) in ms — what the cut
+    safety check compares to refuse joins across a loudness step.
+    """
+    levels: dict[int, float] = {}
+    for start, end in ranges:
+        before = rms_level(path, start - window_ms, window_ms)
+        after = rms_level(path, end, window_ms)
+        if before is not None:
+            levels[int(start)] = before
+        if after is not None:
+            levels[int(end)] = after
+    return levels
 
 
 def _escape_filter_path(path: str | Path) -> str:
@@ -321,3 +373,210 @@ def thumbnail(video_path: str | Path, out_jpg: str | Path, at_ms: int = 1000) ->
     out_jpg = Path(out_jpg)
     run_ffmpeg(['-y', '-ss', f'{at_ms / 1000:.3f}', '-i', str(video_path), '-frames:v', '1', '-q:v', '3', str(out_jpg)])
     return out_jpg
+
+
+# ------------------------------------------------------------ visual director
+
+DETECT_WIDTH = 640
+DETECT_FPS = 10
+_SCENE_PTS = re.compile(r'pts_time:\s*([0-9.]+)')
+
+
+def detect_scenes(path: str | Path, threshold: float = 0.35, scale_width: int = 320) -> list[int]:
+    """Shot changes (ms) via ffmpeg's scene score on a downscaled decode of the whole file."""
+    result = subprocess.run(
+        [ffmpeg_exe(), '-hide_banner', '-nostdin', '-i', str(path), '-an',
+         '-vf', f"scale={scale_width}:-2,select='gt(scene,{threshold})',showinfo", '-f', 'null', '-'],
+        capture_output=True, text=True,
+    )
+    cuts = []
+    for line in (result.stderr or '').splitlines():
+        if 'Parsed_showinfo' not in line:
+            continue
+        m = _SCENE_PTS.search(line)
+        if m:
+            cuts.append(int(float(m.group(1)) * 1000))
+    return sorted(set(cuts))
+
+
+def slice_video_for_detection(src: str | Path, start_ms: int, end_ms: int, out_path: str | Path,
+                              width: int = DETECT_WIDTH, fps: int = DETECT_FPS) -> Path:
+    """
+    A small, fast-to-decode copy of the clip interval for the stock frame
+    grabber + face detector: downscaled, reduced frame rate, no audio,
+    timestamps restarting at 0 so frame times are clip times.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    run_ffmpeg(['-y', '-ss', f'{start_ms / 1000:.3f}', '-t', f'{(end_ms - start_ms) / 1000:.3f}', '-i', str(src),
+                '-an', '-vf', f'scale={width}:-2,fps={fps}', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+                '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(out_path)])
+    return out_path
+
+
+def crop_thumbnail(video_path: str | Path, out_jpg: str | Path, at_ms: int, box: tuple[int, int, int, int],
+                   pad: float = 0.6, size: int = 160) -> Path:
+    """A square face thumbnail around a box (source pixels) at a given time."""
+    x, y, w, h = box
+    side = int(max(w, h) * (1 + 2 * pad))
+    cx, cy = x + w / 2, y + h / 2
+    out_jpg = Path(out_jpg)
+    run_ffmpeg(['-y', '-ss', f'{at_ms / 1000:.3f}', '-i', str(video_path), '-frames:v', '1',
+                '-vf', f"crop={side}:{side}:{int(cx - side / 2)}:{int(cy - side / 2)}:exact=1,scale={size}:{size}",
+                '-q:v', '4', str(out_jpg)])
+    return out_jpg
+
+
+def _interp(keyframes: list[list[int]], t_ms: float) -> tuple[float, float]:
+    """Linear interpolation of [t, x, y] keyframes."""
+    if t_ms <= keyframes[0][0]:
+        return keyframes[0][1], keyframes[0][2]
+    for a, b in zip(keyframes, keyframes[1:]):
+        if a[0] <= t_ms <= b[0]:
+            span = max(1, b[0] - a[0])
+            f = (t_ms - a[0]) / span
+            return a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f
+    return keyframes[-1][1], keyframes[-1][2]
+
+
+def write_pan_commands(path: str | Path, target: str, keyframes: list[list[int]], start_ms: int, end_ms: int,
+                       fps: int, max_x: int, max_y: int) -> Path:
+    """
+    A sendcmd file moving one crop window frame by frame (times relative to
+    the piece start). The last keyframe holds to the end.
+    """
+    path = Path(path)
+    lines = []
+    frames = int(round((end_ms - start_ms) / 1000 * fps)) + 1
+    for k in range(frames):
+        t = k / fps
+        x, y = _interp(keyframes, start_ms + t * 1000)
+        x = int(round(max(0, min(max_x, x))))
+        y = int(round(max(0, min(max_y, y))))
+        lines.append(f'{t:.4f} {target} x {x}, {target} y {y};')
+    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return path
+
+
+def _escape_cmd_path(path: str | Path) -> str:
+    return _escape_filter_path(path)
+
+
+def build_layout_graph(pieces: list[dict], layout: dict, width: int, height: int, fps: int,
+                       ass_path: str | Path | None, work: Path) -> str:
+    """
+    The video filter graph for a layout plan: each piece (a keep segment
+    intersected with a layout segment, in clip time) is trimmed from the
+    decoded clip, reframed by its layout — crops driven per frame by sendcmd
+    files written next to the graph — scaled to the canvas and concatenated;
+    captions and pixel format last.
+    """
+    out_w, out_h = int(layout['canvas']['width']), int(layout['canvas']['height'])
+    paths = layout.get('paths') or []
+    parts = [f'[0:v]fps={fps},setpts=PTS-STARTPTS,split={len(pieces)}' + ''.join(f'[b{i}]' for i in range(len(pieces)))]
+    outs = []
+    for i, piece in enumerate(pieces):
+        s, e = piece['start_ms'], piece['end_ms']
+        seg = piece['segment']
+        layout_name = seg['layout']
+        base = f'[b{i}]trim=start={s / 1000:.3f}:end={e / 1000:.3f},setpts=PTS-STARTPTS'
+        seg_paths = [p for p in paths if p['segment'] == piece['segment_index']]
+
+        def pan_chain(p: dict, label: str, panel_w: int, panel_h: int) -> str:
+            cmd = write_pan_commands(work / f'pan_{i}_{label}.cmd', f'crop@{label}', p['keyframes'], s, e, fps,
+                                     width - p['w'], height - p['h'])
+            x0, y0 = _interp(p['keyframes'], s)
+            return (f"sendcmd=f='{_escape_cmd_path(cmd)}',crop@{label}={p['w']}:{p['h']}:{int(x0)}:{int(y0)}:exact=1,"
+                    f'scale={panel_w}:{panel_h}')
+
+        if layout_name == 'solo_follow' and seg_paths:
+            parts.append(f'{base},{pan_chain(seg_paths[0], f"p{i}a", out_w, out_h)}[v{i}]')
+        elif layout_name in ('stacked_two', 'side_by_side') and len(seg_paths) >= 2:
+            a, b = seg_paths[0], seg_paths[1]
+            if layout_name == 'stacked_two':
+                pw, ph, join = out_w, out_h // 2, 'vstack'
+            else:
+                pw, ph, join = out_w // 2, out_h, 'hstack'
+            parts.append(f'{base},split[s{i}a][s{i}b]')
+            parts.append(f'[s{i}a]{pan_chain(a, f"p{i}a", pw, ph)}[t{i}a]')
+            parts.append(f'[s{i}b]{pan_chain(b, f"p{i}b", pw, ph)}[t{i}b]')
+            parts.append(f'[t{i}a][t{i}b]{join}[v{i}]')
+        elif layout_name == 'screen_share' and seg_paths:
+            top_h = int(out_w * height / width) // 2 * 2 if width >= height else int(out_h * 0.58) // 2 * 2
+            top_h = min(top_h, int(out_h * 0.58) // 2 * 2)
+            bot_h = out_h - top_h
+            parts.append(f'{base},split[s{i}a][s{i}b]')
+            parts.append(f'[s{i}a]scale={out_w}:{top_h}:force_original_aspect_ratio=decrease,pad={out_w}:{top_h}:(ow-iw)/2:(oh-ih)/2[t{i}a]')
+            parts.append(f'[s{i}b]{pan_chain(seg_paths[0], f"p{i}b", out_w, bot_h)}[t{i}b]')
+            parts.append(f'[t{i}a][t{i}b]vstack[v{i}]')
+        elif layout_name == 'fixed_crop' and seg_paths:
+            p = seg_paths[0]
+            k = p['keyframes'][0]
+            parts.append(f'{base},crop={p["w"]}:{p["h"]}:{k[1]}:{k[2]}:exact=1,scale={out_w}:{out_h}[v{i}]')
+        elif layout_name == 'original' or (out_w >= out_h):
+            parts.append(f'{base},scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2[v{i}]')
+        else:  # full_frame: blur-pad
+            parts.append(f'{base},split[f{i}a][f{i}b]')
+            parts.append(f'[f{i}b]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},gblur=sigma=30,eq=brightness=-0.08[g{i}]')
+            parts.append(f'[f{i}a]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease[h{i}]')
+            parts.append(f'[g{i}][h{i}]overlay=(W-w)/2:(H-h)/2[v{i}]')
+        # a crop window is rarely the exact output aspect, so scale keeps the
+        # picture's shape by giving each piece its own (near-square) pixel
+        # aspect — and concat refuses to join pieces whose SARs differ.
+        # Square pixels everywhere: the sub-0.1 % stretch is invisible.
+        parts.append(f'[v{i}]setsar=1[u{i}]')
+        outs.append(f'[u{i}]')
+    if len(outs) > 1:
+        parts.append(''.join(outs) + f'concat=n={len(outs)}:v=1:a=0[joined]')
+        tail = '[joined]'
+    else:
+        tail = outs[0]
+    if ass_path:
+        parts.append(f"{tail}subtitles='{_escape_filter_path(ass_path)}'[captioned]")
+        tail = '[captioned]'
+    parts.append(f'{tail}format=yuv420p[vout]')
+    return ';'.join(parts)
+
+
+def layout_pieces(keep: list[tuple[int, int]], segments: list[dict]) -> list[dict]:
+    """Keep segments split at layout boundaries: the units the layout graph renders."""
+    pieces = []
+    for s, e in keep:
+        for idx, seg in enumerate(segments):
+            a, b = max(s, seg['start_ms']), min(e, seg['end_ms'])
+            if b - a >= 40:
+                pieces.append({'start_ms': a, 'end_ms': b, 'segment_index': idx, 'segment': seg})
+    return pieces or [{'start_ms': 0, 'end_ms': max(e for _, e in keep), 'segment_index': 0,
+                       'segment': {'layout': 'full_frame', 'subjects': []}}]
+
+
+def render_layout_video(
+    video_path: str | Path,
+    clip_start_ms: int,
+    clip_end_ms: int,
+    keep: list[tuple[int, int]],
+    layout: dict,
+    audio_path: str | Path,
+    out_path: str | Path,
+    work: Path,
+    ass_path: str | Path | None = None,
+    fps: int = 30,
+    crf: int = 20,
+    preset: str = 'veryfast',
+) -> Path:
+    """Render a clip through its layout plan (the audio is already cut and mastered)."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    width, height = int(layout['source']['width']), int(layout['source']['height'])
+    pieces = layout_pieces(keep, layout['segments'])
+    graph = build_layout_graph(pieces, layout, width, height, fps, ass_path, work)
+    run_ffmpeg(
+        [
+            '-y', '-ss', f'{clip_start_ms / 1000:.3f}', '-t', f'{(clip_end_ms - clip_start_ms) / 1000:.3f}',
+            '-i', str(video_path), '-i', str(audio_path),
+            '-filter_complex', graph, '-map', '[vout]', '-map', '1:a',
+            '-c:v', 'libx264', '-preset', preset, '-crf', str(crf), '-r', str(fps),
+            '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-shortest', str(out_path),
+        ]
+    )
+    return out_path

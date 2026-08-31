@@ -1,19 +1,34 @@
 "use client";
 
 import { useState } from "react";
-import { Music, Volume2 } from "lucide-react";
+import { AlertTriangle, Check, Loader2, Music, Volume2, VolumeX } from "lucide-react";
 import type { AudioProof } from "@/lib/engine";
+import type { RenderReport } from "@/lib/podcast";
+
+const MUTE_HELP =
+  "No sound although the level is normal? The tab or the site is muted in your browser (Chrome: right-click the tab → Unmute site, or the speaker icon in the address bar), or the system output goes elsewhere. If the test tone is silent too, it is the browser or the computer, not the clip.";
+
+const fmtLufs = (value: number) => `${value.toFixed(1).replace("-", "−")} LUFS`;
 
 /**
- * Sound diagnostics next to the clip player. The rendered files carry a normal
- * AAC track, so when nothing is audible the cause is almost always the browser
- * tab (Chrome remembers "Mute site"), the site's sound permission, or the
- * system output — none of which a <video> element can detect. This gives the
- * user two independent checks: a generated tone (bypasses the video path) and
- * the clip's own audio decoded in the page (proves the file has sound).
+ * One-line sound status next to the player plus two independent checks: a
+ * generated test tone (bypasses the video path — proves the browser and the
+ * output are audible) and "play with sound" (unmutes inside a user gesture).
+ * The rendered files carry a normal stereo track, so silence is almost always
+ * a muted tab or the system output; the details live in the tooltip.
  */
-export default function SoundTools({ proof, onUnmutePlay }: { proof: AudioProof | null | undefined; onUnmutePlay: () => void }) {
-  const [tone, setTone] = useState<"idle" | "playing" | "failed">("idle");
+export default function SoundTools({
+  proof,
+  report,
+  onUnmutePlay,
+}: {
+  /** the clip's own audio decoded in the page (undefined = not checked, null = could not decode) */
+  proof: AudioProof | null | undefined;
+  /** the render being played, or null when the original recording is playing */
+  report?: RenderReport | null;
+  onUnmutePlay: () => void;
+}) {
+  const [tone, setTone] = useState<"idle" | "playing" | "played" | "failed">("idle");
 
   const playTone = async () => {
     try {
@@ -31,44 +46,61 @@ export default function SoundTools({ proof, onUnmutePlay }: { proof: AudioProof 
       setTone("playing");
       osc.stop(ctx.currentTime + 0.7);
       osc.onended = () => {
-        setTone("idle");
+        setTone("played");
         void ctx.close();
+        setTimeout(() => setTone((t) => (t === "played" ? "idle" : t)), 2500);
       };
     } catch {
       setTone("failed");
     }
   };
 
+  let Icon = Volume2;
+  let text: string;
+  let tint: string;
+  let title: string;
+  if (!report) {
+    text = "original sound";
+    tint = "text-ink-faint";
+    title = "Playing the recording with its own sound. Render a preview to hear the mastered sound and see the captions.";
+  } else if (!report.has_audio) {
+    Icon = VolumeX;
+    text = "no sound track";
+    tint = "text-danger";
+    title = "This render has no audio track.";
+  } else {
+    const parts = [proof && proof.channels !== 2 ? `${proof.channels} ch` : "stereo"];
+    if (report.loudness) parts.push(fmtLufs(report.loudness.integrated_lufs));
+    if (report.captions) parts.push(`${report.caption_preset ?? ""} captions`.trim());
+    text = parts.join(" · ");
+    tint = "text-ink-dim";
+    title = proof
+      ? `Decoded in this browser: peak ${proof.peakDb} dB over ${proof.seconds.toFixed(1)} s. ${MUTE_HELP}`
+      : proof === null
+      ? `Could not decode the sound in this browser. ${MUTE_HELP}`
+      : MUTE_HELP;
+  }
+  if (tone === "failed") {
+    Icon = AlertTriangle;
+    tint = "text-processing";
+    title = `The test tone was blocked. ${MUTE_HELP}`;
+  }
+
   return (
-    <div className="mt-2 rounded-md border border-line bg-surface-overlay px-3 py-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={onUnmutePlay}
-          className="inline-flex items-center gap-1 rounded-md bg-ink px-2.5 py-1 text-[11px] text-ink-inverse"
-        >
-          <Volume2 className="h-3 w-3 text-accent" /> Play with sound
+    <div className="flex items-center gap-2">
+      <span className={`flex min-w-0 items-center gap-1.5 ${tint}`} title={title}>
+        {tone === "played" ? <Check className="h-3.5 w-3.5 shrink-0 text-ready" /> : <Icon className="h-3.5 w-3.5 shrink-0" />}
+        <span className="truncate font-mono text-[11px]">{tone === "played" ? "tone played" : text}</span>
+      </span>
+      <span className="ml-auto flex shrink-0 items-center gap-0.5">
+        <button type="button" onClick={() => void playTone()} className="rr-btn rr-btn-ghost rr-btn-sm" title="Play a short test tone that bypasses the video">
+          {tone === "playing" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Music className="h-3.5 w-3.5" />}
+          {tone === "playing" ? "Playing tone…" : tone === "failed" ? "Tone blocked" : "Sound check"}
         </button>
-        <button
-          type="button"
-          onClick={() => void playTone()}
-          className="inline-flex items-center gap-1 rounded-md border border-line px-2.5 py-1 text-[11px] text-ink hover:border-accent hover:text-accent"
-        >
-          <Music className="h-3 w-3" /> {tone === "playing" ? "playing a test tone…" : tone === "failed" ? "tone blocked" : "Sound check (test tone)"}
+        <button type="button" onClick={onUnmutePlay} className="rr-btn rr-btn-ghost rr-btn-sm px-2" title="Play with sound" aria-label="Play with sound">
+          <Volume2 className="h-3.5 w-3.5" />
         </button>
-        <span className="font-mono text-[11px] text-ink-dim">
-          {proof === undefined
-            ? "checking the clip's audio track…"
-            : proof === null
-            ? "could not decode the clip's audio in this browser"
-            : `clip audio decoded here: peak ${proof.peakDb} dB · ${proof.channels === 2 ? "stereo" : `${proof.channels} ch`} · ${proof.seconds.toFixed(1)}s`}
-        </span>
-      </div>
-      <p className="mt-1 text-[11px] leading-relaxed text-ink-faint">
-        No sound although the level above is normal? The tab or site is muted in your browser (Chrome: right-click the tab →
-        &ldquo;Unmute site&rdquo;, or the speaker icon in the address bar), or the system output is routed elsewhere. If the test tone
-        is silent too, it&apos;s the browser or the Mac, not the clip.
-      </p>
+      </span>
     </div>
   );
 }

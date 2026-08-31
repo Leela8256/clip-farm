@@ -4,7 +4,8 @@ from rocketlib import IGlobalBase
 
 from local_nodes.podcast_common.config import load_node_config
 
-DEFAULTS = {'min_seconds': 20, 'max_seconds': 90, 'per_chunk': 4, 'chunk_minutes': 10, 'overlap_seconds': 45}
+DEFAULTS = {'min_seconds': 20, 'max_seconds': 90, 'per_chunk': 4, 'chunk_minutes': 10, 'overlap_seconds': 45,
+            'passage_seconds': 60, 'passage_step_seconds': 30}
 
 
 class IGlobal(IGlobalBase):

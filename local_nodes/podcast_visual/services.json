@@ -1,0 +1,42 @@
+{
+  "title": "Podcast Visual Scan",
+  "protocol": "podcast_visual://",
+  "classType": ["text"],
+  "capabilities": [],
+  "register": "filter",
+  "node": "python",
+  "path": "local_nodes.podcast_visual",
+  "prefix": "podcast_visual",
+  "description": [
+    "The episode's visual scan. Joins the stock pose_estimation output (text lane, one JSON person list per sampled frame) with frame_grabber's frame table (table lane) and the episode reference from podcast_ingest (text lane): clusters the faces into the people on screen (screen positions with a thumbnail and a presence timeline), detects shot changes with ffmpeg's scene score, writes analysis/visual/people.json + scenes.json and records the scan in project.json. The manifest is returned on the answers lane."
+  ],
+  "icon": "podcast-visual.svg",
+  "documentation": "https://docs.rocketride.org",
+  "lanes": {
+    "text": ["answers", "text"],
+    "table": ["answers", "text"]
+  },
+  "preconfig": {
+    "default": "default",
+    "profiles": {
+      "default": { "sample_seconds": 2, "scenes": true, "scene_threshold": 0.35 }
+    }
+  },
+  "fields": {
+    "podcast_visual.sample_seconds": { "type": "number", "title": "Seconds between sampled frames — must match the frame grabber", "default": 2 },
+    "podcast_visual.scenes": { "type": "boolean", "title": "Detect shot changes", "default": true },
+    "podcast_visual.scene_threshold": { "type": "number", "title": "Scene change threshold (0-1)", "default": 0.35 },
+    "podcast_visual.default": {
+      "object": "default",
+      "properties": ["podcast_visual.sample_seconds", "podcast_visual.scenes", "podcast_visual.scene_threshold"]
+    },
+    "podcast_visual.profile": {
+      "hidden": true,
+      "type": "string",
+      "default": "default",
+      "enum": [["default", "Default"]],
+      "conditional": [{ "value": "default", "properties": ["podcast_visual.default"] }]
+    }
+  },
+  "shape": [{ "section": "Pipe", "title": "Podcast Visual Scan", "properties": ["podcast_visual.profile"] }]
+}

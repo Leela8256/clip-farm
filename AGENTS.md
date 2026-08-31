@@ -4,22 +4,33 @@ Read this before changing anything. It is the contract the code follows.
 
 ## What this project is
 
-Clip Farm: a podcast episode goes in, explainable clip candidates, previews and finished
-vertical/wide exports come out. **All processing runs on the RocketRide engine as pipelines**;
-the frontend is a static Next.js site using the `rocketride` SDK in the browser. There is no
-backend of ours — no API server, no Celery, no database. Everything a project needs lives in
-the account file store under `projects/<episode>/` (see `docs/ARCHITECTURE.md`).
+Clip Farm: a podcast episode goes in; explainable clip candidates, directed clips from a
+plain-language request (Prompt Director), previews and finished vertical/wide exports come
+out. **All processing runs on the RocketRide engine as pipelines**; the frontend is a
+static Next.js site using the `rocketride` SDK in the browser. There is no backend of ours
+— no API server, no Celery, no database. The only service next to the engine is the
+transcript index (Qdrant via docker-compose; `rocketride_vector` in a hosted deployment).
+Everything a project needs lives in the account file store under `projects/<episode>/`
+(see `docs/ARCHITECTURE.md`).
+
+## Golden rule: stock nodes first
+
+Use a stock node whenever one does the job (`audio_transcribe`, `embedding_transformer`,
+`qdrant`, `llm_anthropic`, `response_*`, later `frame_grabber` / `face_detection`,
+`summarization`, `db_*`). `docs/NODE_CATALOG.md` is the map of what exists; consult it
+before writing a node. A custom node is justified only for podcast-specific logic no stock
+node performs (timestamp reconstruction, constraint enforcement, word-level editing,
+ffmpeg rendering). Prompt engineering is client-side (`frontend/lib/prompts/director.json`,
+shared with `tools/prompts.py`) so the pipelines stay stock all the way to the LLM.
 
 ## Hard constraints — never violate these
 
 ### Pipelines and nodes (`.rocketride/*.pipe`, `local_nodes/`)
 
-- Use **stock nodes wherever one exists** (`audio_transcribe`, `llm_anthropic`, later
-  `frame_grabber`/`face_detection`, `db_*`). Custom nodes stay small and podcast-specific.
-- Every custom node declares what it imports in its `requirements.txt` (`av`, `imageio-ffmpeg`,
-  `faster-whisper`, …); the engine's `depends()` installs them into the engine runtime when the
-  node loads, under the engine's own constraints. Keep the list minimal and unpinned — a fresh
-  prebuilt engine ships only numpy, so nothing may be assumed present.
+- Every custom node declares what it imports in its `requirements.txt` (`av`,
+  `imageio-ffmpeg`, `faster-whisper`, …); the engine's `depends()` installs them into the
+  engine runtime when the node loads. Keep the list minimal and unpinned — a fresh prebuilt
+  engine ships only numpy, so nothing may be assumed present.
 - Never map account-store paths to disk. Read/write through the store API
   (`podcast_common/store.py`); cache the source locally through `podcast_common/cache.py`.
 - Secrets never reach the browser. The Anthropic key is `${ROCKETRIDE_ANTHROPIC_KEY}` in the
@@ -30,63 +41,118 @@ the account file store under `projects/<episode>/` (see `docs/ARCHITECTURE.md`).
   reference. Do not "fix" this by trusting `time_stamp` alone.
 - The `answers` lane carries every answer written along the path (the LLM's raw answers reach
   the response node too). Clients pick the manifest by shape (last payload with `project`).
+- The LLM only sees a document's `page_content`: anything the model must know (timestamps,
+  ids) is inlined in the text. Index passages are `[mm:ss - mm:ss] sentence` lines with
+  `objectId = episode id`; searches scope with `filter.objectIds`.
+- A stock store forwards the client's Question unchanged (plus documents). Do not put a
+  `prompt` node after the store — it rebuilds the question and drops `expectJson`/`role`.
 - Every node reports progress with `update_status()` (status.json + SSE type `podcast`) and
   records failures as `stage: "error"` before raising.
-- Edits are non-destructive: `edits/clip-edits.json` is the only place user changes live;
-  candidates.json is never rewritten by the UI.
-- Schemas carry `schema_version`; bump it when a file's shape changes and keep readers tolerant.
+- Hard constraints are enforced before ranking (`podcast_common/constraints.py`), and a
+  constraint that cannot be verified is reported as `null` + a warning — never asserted.
+- Duration fitting never cuts through a spoken word (`podcast_common/editing.py`); cuts that
+  fail a safety rule are muted or kept, and every planned cut has an id the user can restore.
+- Edits are non-destructive: `edits/clip-edits.json` (schema 2) is the only place user
+  changes live; candidates and request files are never rewritten by the UI. Revisions append
+  versions; the base record and the candidate stay intact.
+- Schemas carry `schema_version`; bump it when a file's shape changes and keep readers
+  tolerant (`analysis/clips/<id>.json` is still read as a fallback for plan.json).
+
+- Stock nodes that declare the `debug` capability (`face_detection`, `caption`, …) are skipped
+  by release engines (`services.cpp` drops them under `NDEBUG`) — "service not found" at run
+  time. Use `pose_estimation` for faces (keypoints → face box in `visual.faces_from_persons`).
+- Vision nodes get a small copy of the clip (640 px wide, 10 fps, `media.slice_video_for_detection`)
+  streamed on the `video` lane, never the full-size source; frames are joined to time through
+  the `frame_grabber` table (ordinal → seconds), falling back to the sample interval.
+- The layout plan is data (`analysis/clips/<id>/layout.json`, schema 1) rendered with per-frame
+  `sendcmd` crop commands + `crop@label=…:exact=1`, `vstack`/`hstack` panels; every layout
+  segment holds ≥ 2 s, crop paths are EMA-smoothed with a pan cap, and `face_safe` counts frames
+  where a face touches a crop edge. Producer overrides (`layout:`, `subject:`) win over the plan.
 
 ### Frontend (`frontend/`)
 
 - Browser-only and fully static (`output: "export"`): the SDK talks to the engine directly;
   no `/api` routes, no server actions, no dynamic `[param]` routes (use query params such as
   `/episode?id=…` behind a `Suspense` boundary). `npm run build` must keep producing `out/`.
-- `lib/podcast.ts` stays free of SDK imports (unit-tested); `lib/engine.ts` is the only module
-  that touches the SDK. Pipeline JSON in `lib/pipelines/` must mirror `.rocketride/*.pipe`.
+- `lib/podcast.ts` and `lib/director.ts` stay free of SDK imports (unit-tested); `lib/engine.ts`
+  is the only module that touches the SDK. Pipeline JSON in `lib/pipelines/` must mirror
+  `.rocketride/*.pipe`; prompt text lives in `lib/prompts/director.json` and is read by both
+  the browser and `tools/prompts.py`.
 - Video players are plain `<video controls playsInline>` with the file's own audio — never
   `muted`, never autoplay. Show the render report's audio line next to a player.
 - No `setState` synchronously inside `useEffect` bodies (lint rule); defer with a timeout or
-  do it in async callbacks. Keep `react-hooks` lint clean.
-- Keep the design tokens in `app/design-tokens.css` as the source of truth for colours/type.
+  do it in async callbacks. Keep `react-hooks` lint clean (don't name handlers `use*`).
+- Keep the design tokens in `app/design-tokens.css` as the source of truth for colours/type, and build
+  from its primitives (`.rr-card`, `.rr-btn*`, `.rr-chip*`, `.rr-input/.rr-select/.rr-textarea`, `.rr-field`,
+  `.rr-progress`, `.rr-skeleton`, `.rr-enter`) so every screen feels like one product.
+- The UI never names the machinery: no "RocketRide", "engine", "Claude", "pipeline", "node", "store",
+  "index" in user-facing text (say "the director", "your library", "transcript search", "analysing").
+  `describeStatus()` wording follows the same rule; the sidebar dot is the only connection indicator.
+- The dev server (`next dev`) does not open the SDK socket in headless tests; browser tests
+  run against the static build (`npm run build && npx serve out`).
 
 ### Media
 
 - Loudness target −16 LUFS integrated / −1 dBTP (two-pass loudnorm); captions are burned in
   from word timestamps mapped through the keep segments (`TimelineMap`); audio and video are
-  cut from the same keep list so they never drift.
+  cut from the same keep list so they never drift; mutes are applied on the source timeline.
 - Concatenate with `trim`/`concat` — chained `xfade` truncates after the second segment.
+- Every reframed piece ends with `setsar=1` before `concat`: `scale` compensates a crop window
+  that is not exactly the output aspect with its own pixel aspect, and `concat` rejects inputs
+  whose SARs differ (it only bites when a plan mixes crop sizes — solo close-ups + stacked panels).
 
 ## File map
 
 ```
-.rocketride/episode-analysis.pipe   chat → podcast_ingest → audio_transcribe → podcast_segment → llm_anthropic → podcast_refine → response_answers
-.rocketride/clip-preview.pipe       chat → podcast_prepare_clip → podcast_render[preview] → response_answers
-.rocketride/clip-export.pipe        chat → podcast_prepare_clip → podcast_render[export] → response_answers
-local_nodes/podcast_common/         store · cache · project · media · clips · captions · align · config
-local_nodes/podcast_*/              services.json · IGlobal.py · IInstance.py (one class each)
-local_nodes/tests/                  python -m unittest discover -s local_nodes/tests
-frontend/app/page.tsx               library + new episode
-frontend/app/episode/page.tsx       workspace (/episode?id=…)
-frontend/nginx.conf, Dockerfile     static export served by nginx (no Node server at runtime)
-frontend/components/podcast/        EngineBadge · NewEpisodeForm · StatusTimeline · ChapterStrip · CandidateCard · ClipWorkbench · TranscriptPanel
-frontend/lib/engine.ts              connection, store helpers, runAnalysis/runClip, background runs
-frontend/lib/podcast.ts             types, manifest/report normalisation, status text, formatting
-tools/podcast_run.py                CLI driver (analyze / preview / export / status / get / ls)
-docs/ARCHITECTURE.md                the long version of all of the above
+.rocketride/episode-analysis.pipe    chat → podcast_ingest → audio_transcribe → podcast_segment → llm_anthropic → podcast_refine → response_answers
+.rocketride/transcript-index.pipe    chat → podcast_ingest → podcast_segment → embedding_transformer → qdrant (+ response_text)
+.rocketride/transcript-search.pipe   chat → embedding_transformer → qdrant → response_documents
+.rocketride/director-chat.pipe       chat → llm_anthropic → response_answers (parse, revise)
+.rocketride/prompt-director.pipe     chat → embedding_transformer → qdrant → llm_anthropic → podcast_refine → response_answers
+.rocketride/prompt-director-full.pipe chat → llm_anthropic → podcast_refine → response_answers (no index)
+.rocketride/visual-scan.pipe         chat → podcast_ingest → frame_grabber → pose_estimation → podcast_visual → response_answers
+.rocketride/clip-preview.pipe        chat → podcast_prepare_clip → (frame_grabber → pose_estimation) → podcast_layout → podcast_render[preview] → response_answers
+.rocketride/clip-export.pipe         chat → podcast_prepare_clip → (frame_grabber → pose_estimation) → podcast_layout → podcast_render[export] → response_answers
+local_nodes/podcast_common/          store · cache · project · media · clips · spec · constraints · editing · passages · captions · align · visual · config
+local_nodes/podcast_*/               services.json · IGlobal.py · IInstance.py (one class each)
+local_nodes/tests/                   python -m unittest discover -s local_nodes/tests
+frontend/app/layout.tsx              shell: sidebar navigation (New episode · Clip Studio · History), toasts
+frontend/app/page.tsx                home: upload only
+frontend/app/history/page.tsx        history of runs (live status, search, sort)
+frontend/app/episode/page.tsx        Clip Studio (/episode?id=…): map, Direct / Moments / Transcript tabs, sticky preview column, keyboard (R, [, ], Space, Esc)
+frontend/components/shell/           Sidebar (owns the connection + retry) · Toasts (`toast()`)
+frontend/components/history/         RunRow · RunThumb · HistorySkeleton
+frontend/components/podcast/         NewEpisodeForm · StatusTimeline · PromptDirector · ChapterStrip · CandidateCard · ClipWorkbench · SoundTools · ComplianceBadges · TranscriptPanel
+frontend/lib/engine.ts               connection, store helpers, pipeline runs (analysis, index, visual scan, search, parse, director, revise, clips)
+frontend/lib/podcast.ts              types, manifest/report normalisation, status text, formatting
+frontend/lib/director.ts             spec normalisation, duration windows, question builders, revisions, compliance badges
+frontend/lib/prompts/director.json   the prompt text (parse / direct / revise) shared with tools/prompts.py
+tools/podcast_run.py                 CLI driver (analyze / index / visual / search / parse / direct / revise / preview / export / status / get / ls)
+tools/prompts.py                     Python twin of the question builders
+tools/engine.sh                      run the engine as a service from the sibling server clone
+docs/ARCHITECTURE.md                 the long version of all of the above
+docs/NODE_CATALOG.md                 every stock node and where it fits the roadmap
 ```
 
 ## Testing
 
-- `python3 -m unittest discover -s local_nodes/tests -v` — pure logic, no engine.
+- `python3 -m unittest discover -s local_nodes/tests -v` — pure logic, no engine (spec,
+  constraints, editing, clips, captions, visual: tracking, talking cue, planning, crop paths).
 - `cd frontend && npm run lint && npm test && npm run build`.
-- End to end: start the engine with `--node_path=<repo>` and run `tools/podcast_run.py` or
-  the UI on a short recording (a 60 s file analyses in ~20 s). Check exports with `ffprobe`
-  (h264 + AAC stereo, expected dimensions) and the report's loudness.
+- End to end: `tools/engine.sh start` (engine with `--node_path=<repo>`), `docker compose up -d
+  qdrant`, then `tools/podcast_run.py analyze|index|search|parse|direct|revise|preview|export`
+  on a short recording (a 10-minute file: analysis ≈ 100 s, index ≈ 1 s, visual ≈ 20 s,
+  direct ≈ 30 s, preview ≈ 25 s). Check exports with `ffprobe` (h264 + AAC stereo, expected
+  dimensions), the report's loudness, `compliance.json` (`duration_met` in strict mode, the
+  `visual` block) and the preview's `layout` summary (people, segments, `face_cut_violations`).
+  Grab a frame of the vertical render and look at it — a face-safe metric is not a picture.
+- Browser: build, `npx serve -l 3006 out`, headless Chrome on :9222, drive the page with a
+  CDP script (parse → find → preview → revise).
 
-## Not in scope for v1
+## Not in scope yet
 
-Speaker diarization, face-tracking 9:16 reframe (planned Stage 1B via stock
-`frame_grabber` + `face_detection`), music beds, a database index of projects, cloud deployment.
+Speaker diarization (identity-linked active speaker), brand kits / compilations (phase 3),
+full-episode transcript editing (phase 4), content packs and cross-episode search (phase 5).
 
 # RocketRide — AI Pipeline Builder
 

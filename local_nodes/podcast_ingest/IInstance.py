@@ -152,7 +152,9 @@ class IInstance(IInstanceBase):
         media['probed'] = time.time()
         write_json(store, project.analysis('media.json'), media)
         data['media'] = {k: media[k] for k in ('duration_ms', 'width', 'height', 'fps', 'has_video')}
-        data['analysis'] = {**(data.get('analysis') or {}), 'status': 'analyzing', 'started_at': time.time()}
+        if self.instance.hasListener('audio'):
+            # a transcription run; other pipes (transcript-index) only need the reference
+            data['analysis'] = {**(data.get('analysis') or {}), 'status': 'analyzing', 'started_at': time.time()}
         save_project(store, project, data)
 
         work = Path(tempfile.mkdtemp(prefix='podcast_ingest_'))

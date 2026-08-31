@@ -20,6 +20,24 @@ ACCENT_ASS = '&H004A6BFF'
 WHITE_ASS = '&H00FFFFFF'
 BLACK_ASS = '&H00000000'
 BACK_ASS = '&H80000000'
+YELLOW_ASS = '&H0000D4FF'      # #FFD400
+SOFT_WHITE_ASS = '&H00E6E6E6'
+NAVY_ASS = '&H00402010'        # #102040, a deep blue outline for the yellow preset
+TRANSPARENT_ASS = '&HFF000000'
+
+# Caption presets a producer can ask for ("use yellow captions"). Phase 3's
+# Brand Studio turns these into full templates; the fields here are what the
+# ASS style line needs.
+CAPTION_PRESETS = {
+    'classic': {'highlight': ACCENT_ASS, 'text': WHITE_ASS, 'outline': BLACK_ASS, 'back': BACK_ASS,
+                'bold': -1, 'outline_px': 4, 'shadow': 0, 'scale': 1.0},
+    'yellow-bold': {'highlight': YELLOW_ASS, 'text': WHITE_ASS, 'outline': NAVY_ASS, 'back': BACK_ASS,
+                    'bold': -1, 'outline_px': 5, 'shadow': 1, 'scale': 1.12},
+    'white-outline': {'highlight': WHITE_ASS, 'text': SOFT_WHITE_ASS, 'outline': BLACK_ASS, 'back': TRANSPARENT_ASS,
+                      'bold': -1, 'outline_px': 5, 'shadow': 0, 'scale': 1.0},
+    'minimal': {'highlight': WHITE_ASS, 'text': SOFT_WHITE_ASS, 'outline': BLACK_ASS, 'back': TRANSPARENT_ASS,
+                'bold': 0, 'outline_px': 2, 'shadow': 0, 'scale': 0.9},
+}
 
 # Caption geometry per layout: (play_w, play_h, font_size, margin_v). libass
 # scales the PlayRes coordinate system to the real frame, so a 540x960
@@ -74,8 +92,26 @@ def _clean(word: str) -> str:
     return word.replace('{', '(').replace('}', ')').replace('\n', ' ').strip()
 
 
-def build_ass(groups: list[list[dict]], layout: str = 'vertical', font_name: str = 'DejaVu Sans') -> str:
+def seam_placement(segments: list[dict] | None):
+    """
+    Caption placement per output time for a layout plan: lines that fall in a
+    stacked segment sit on the seam between the two panels (both faces stay
+    clear), everything else uses the bottom band.
+    """
+    def place(t_ms: int) -> str:
+        for seg in segments or []:
+            if seg.get('start_ms', 0) <= t_ms < seg.get('end_ms', 0) and seg.get('layout') == 'stacked_two':
+                return 'seam'
+        return 'bottom'
+
+    return place
+
+
+def build_ass(groups: list[list[dict]], layout: str = 'vertical', preset: str = 'classic', font_name: str = 'DejaVu Sans',
+              placement=None) -> str:
     play_w, play_h, font_size, margin_v = CAPTION_LAYOUTS[layout]
+    style = CAPTION_PRESETS.get(preset) or CAPTION_PRESETS['classic']
+    font_size = int(round(font_size * style['scale']))
     header = '\n'.join(
         [
             '[Script Info]',
@@ -89,8 +125,8 @@ def build_ass(groups: list[list[dict]], layout: str = 'vertical', font_name: str
             'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, '
             'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, '
             'Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-            f'Style: Default,{font_name},{font_size},{ACCENT_ASS},{WHITE_ASS},{BLACK_ASS},{BACK_ASS},'
-            f'-1,0,0,0,100,100,0,0,1,4,0,2,60,60,{margin_v},1',
+            f"Style: Default,{font_name},{font_size},{style['highlight']},{style['text']},{style['outline']},{style['back']},"
+            f"{style['bold']},0,0,0,100,100,0,0,1,{style['outline_px']},{style['shadow']},2,60,60,{margin_v},1",
             '',
             '[Events]',
             'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
@@ -106,6 +142,8 @@ def build_ass(groups: list[list[dict]], layout: str = 'vertical', font_name: str
             duration_cs = max(1, (next_start - w['start_ms']) // 10)
             parts.append(f"{{\\k{duration_cs}}}{_clean(w['word'])}")
         text = ' '.join(parts)
+        if placement is not None and placement(line_start) == 'seam':
+            text = f'{{\\an5\\pos({play_w // 2},{play_h // 2})}}' + text
         events.append(f'Dialogue: 0,{_ass_time(line_start)},{_ass_time(line_end)},Default,,0,0,0,,{text}')
     return header + '\n' + '\n'.join(events) + '\n'
 

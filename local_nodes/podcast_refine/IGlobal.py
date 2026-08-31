@@ -4,7 +4,7 @@ from rocketlib import IGlobalBase
 
 from local_nodes.podcast_common.config import load_node_config
 
-DEFAULTS = {'candidates': 10, 'min_seconds': 20, 'max_seconds': 90}
+DEFAULTS = {'candidates': 10, 'min_seconds': 20, 'max_seconds': 90, 'target_seconds': 45}
 
 
 class IGlobal(IGlobalBase):

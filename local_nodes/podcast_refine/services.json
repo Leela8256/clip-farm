@@ -8,12 +8,13 @@
   "path": "local_nodes.podcast_refine",
   "prefix": "podcast_refine",
   "description": [
-    "Merges the LLM's per-part answers (answers lane) into one ranked, explainable candidate list: snaps every proposal to sentence boundaries, enforces the length limits, removes overlaps, keeps the best N by weighted score (hook / clarity / standalone), dedupes chapters, and writes analysis/candidates.json + chapters.json and the project status. The final manifest is returned on the answers lane."
+    "Turns the LLM's answers (answers lane) into an explainable, validated candidate list. Episode analysis: merges the per-part answers, snaps every proposal to sentence boundaries, enforces the length limits, removes overlaps, keeps the best N by weighted score (hook / clarity / standalone), dedupes chapters and writes analysis/candidates.json + chapters.json. Prompt Director (a chat question with 'project:' and 'request:' context on the questions lane): loads the request spec, enforces the hard constraints (speaker, subject, exclusions, duration window, complete thoughts, no overlaps), ranks on prompt match / hook / standalone / clarity / energy and writes analysis/requests/<id>.json with a compliance report. The manifest is returned on the answers lane."
   ],
   "icon": "podcast-refine.svg",
   "documentation": "https://docs.rocketride.org",
   "lanes": {
     "answers": ["answers", "text"],
+    "questions": ["answers", "text"],
     "text": ["answers", "text"]
   },
   "preconfig": {
@@ -22,17 +23,19 @@
       "default": {
         "candidates": 10,
         "min_seconds": 20,
-        "max_seconds": 90
+        "max_seconds": 90,
+        "target_seconds": 45
       }
     }
   },
   "fields": {
-    "podcast_refine.candidates": { "type": "number", "title": "Candidates to keep", "default": 10 },
+    "podcast_refine.candidates": { "type": "number", "title": "Candidates to keep (analysis)", "default": 10 },
     "podcast_refine.min_seconds": { "type": "number", "title": "Minimum clip length (s)", "default": 20 },
     "podcast_refine.max_seconds": { "type": "number", "title": "Maximum clip length (s)", "default": 90 },
+    "podcast_refine.target_seconds": { "type": "number", "title": "Default target length for directed clips (s)", "default": 45 },
     "podcast_refine.default": {
       "object": "default",
-      "properties": ["podcast_refine.candidates", "podcast_refine.min_seconds", "podcast_refine.max_seconds"]
+      "properties": ["podcast_refine.candidates", "podcast_refine.min_seconds", "podcast_refine.max_seconds", "podcast_refine.target_seconds"]
     },
     "podcast_refine.profile": {
       "hidden": true,

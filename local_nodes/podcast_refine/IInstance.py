@@ -1,8 +1,25 @@
 """
-podcast_refine — merges the LLM's per-part answers into the episode's
-candidate list. Snaps proposals to sentence boundaries, applies the length
-and overlap rules, ranks by the weighted rubric score and persists
-analysis/candidates.json, analysis/chapters.json and the project status.
+podcast_refine — turns the LLM's answers into an explainable, validated
+candidate list.
+
+Two modes, decided by what reaches the node:
+
+  episode analysis   answers from llm_anthropic (one per transcript part) +
+                     the episode reference on the text lane from
+                     podcast_segment. Snaps proposals to sentence boundaries,
+                     applies the length and overlap rules, ranks by the
+                     hook / clarity / standalone rubric, writes
+                     analysis/candidates.json + chapters.json.
+
+  Prompt Director    the chat question itself (questions lane, for the
+                     'project:' / 'request:' context) + the LLM's answer to a
+                     directed search. Loads the request spec, enforces the
+                     hard constraints (speaker, subject, exclusions, duration
+                     window, complete thoughts, no overlaps), ranks the
+                     survivors on prompt match / hook / standalone / clarity /
+                     energy and writes the request file with its compliance
+                     report. Nothing is fabricated: unverifiable constraints
+                     are reported as warnings.
 """
 
 from __future__ import annotations
@@ -13,7 +30,15 @@ from rocketlib import IInstanceBase, Entry, warning
 from ai.common.schema import Answer
 
 from local_nodes.podcast_common.store import get_store, write_json
-from local_nodes.podcast_common.project import Project, parse_ref, load_project, save_project, read_json_or, update_status
+from local_nodes.podcast_common.project import (
+    Project,
+    load_project,
+    parse_context,
+    parse_ref,
+    read_json_or,
+    save_project,
+    update_status,
+)
 from local_nodes.podcast_common.clips import (
     SCORE_WEIGHTS,
     assign_ids,
@@ -23,6 +48,14 @@ from local_nodes.podcast_common.clips import (
     quote_for,
     snap_to_sentences,
     validate_candidates,
+)
+from local_nodes.podcast_common.spec import describe_spec, duration_window, normalize_spec
+from local_nodes.podcast_common.constraints import (
+    DIRECTOR_AXES,
+    DIRECTOR_WEIGHTS,
+    parse_director_answer,
+    request_compliance,
+    select_candidates,
 )
 
 from .IGlobal import IGlobal
@@ -60,6 +93,7 @@ class IInstance(IInstanceBase):
 
     def open(self, obj: Entry):
         self._ref = None
+        self._ctx: dict = {}
         self._payloads: list = []
         self._t0 = time.time()
 
@@ -67,6 +101,10 @@ class IInstance(IInstanceBase):
         ref = parse_ref(text)
         if ref:
             self._ref = ref
+
+    def writeQuestions(self, question):
+        # the chat question (Prompt Director): only its context lines matter here
+        self._ctx = parse_context(question)
 
     def writeAnswers(self, answers):
         items = answers if isinstance(answers, (list, tuple)) else [answers]
@@ -76,18 +114,22 @@ class IInstance(IInstanceBase):
     def closing(self):
         store = get_store()
         pipe = getattr(self.instance, 'pipeId', None)
-        if not self._ref or store is None:
+        root = (self._ref or {}).get('project') or self._ctx.get('project')
+        if not root or store is None:
             warning(f'{NODE}: no episode reference / store')
             self._emit({'error': 'podcast_refine received no episode reference'})
             return
-        project = Project(self._ref['project'])
+        project = Project(root)
+        request_id = (self._ctx.get('request') or '').strip()
         try:
-            manifest = self._refine(store, project, pipe)
+            manifest = self._direct(store, project, request_id, pipe) if request_id else self._refine(store, project, pipe)
         except Exception as exc:  # noqa: BLE001
             warning(f'{NODE}: {exc}')
-            update_status(store, project, NODE, 'error', pipe, message=str(exc))
-            manifest = {**project.to_ref(), 'error': str(exc)}
+            update_status(store, project, NODE, 'error', pipe, message=str(exc), request=request_id or None)
+            manifest = {**project.to_ref(), 'request_id': request_id or None, 'error': str(exc)}
         self._emit(manifest)
+
+    # ------------------------------------------------------------ analysis
 
     def _refine(self, store, project: Project, pipe) -> dict:
         cfg = self.IGlobal.config
@@ -144,6 +186,73 @@ class IInstance(IInstanceBase):
                       chapters=len(chapters), seconds=seconds)
         return {**project.to_ref(), 'goal': goal, 'candidates': kept, 'chapters': chapters,
                 'proposed': len(proposed), 'parts': len(self._payloads), 'empty_parts': empty_parts, 'seconds': seconds}
+
+    # ------------------------------------------------------ Prompt Director
+
+    def _direct(self, store, project: Project, request_id: str, pipe) -> dict:
+        cfg = self.IGlobal.config
+        request = read_json_or(store, project.request(request_id), None)
+        if not isinstance(request, dict):
+            raise ValueError(f'{NODE}: request {request_id!r} not found under {project.requests_dir}')
+        spec = normalize_spec(request.get('spec') or {}, {'target_seconds': cfg['target_seconds'], 'min_seconds': cfg['min_seconds'], 'count': cfg['candidates']})
+        window = duration_window(spec, {'min_seconds': cfg['min_seconds']})
+        data = load_project(store, project)
+        transcript = read_json_or(store, project.analysis('transcript.json'), {}) or {}
+        sentences = transcript.get('sentences') or []
+        duration_ms = int((data.get('media') or {}).get('duration_ms') or transcript.get('duration_ms') or 0)
+        if not sentences:
+            raise ValueError(f'{NODE}: no transcript for {project.root} — run the episode analysis first')
+
+        proposed: list[dict] = []
+        errors: list[str] = []
+        notes: list[str] = []
+        for payload in self._payloads:
+            found = parse_director_answer(payload)
+            if not found and isinstance(payload, str) and payload.lstrip().startswith('**LLM error**'):
+                errors.append(payload.strip()[:300])
+            if isinstance(payload, dict) and str(payload.get('notes') or '').strip():
+                notes.append(str(payload['notes']).strip()[:1000])
+            proposed.extend(found)
+        if errors and not proposed:
+            raise RuntimeError('; '.join(errors))
+
+        kept, rejected = select_candidates(proposed, spec, window, sentences, duration_ms)
+        for i, cand in enumerate(kept, start=1):
+            cand['id'] = f'{request_id}c{i:02d}'
+            cand['rank'] = i
+            cand['request_id'] = request_id
+            cand['sentence_ids'] = [s['id'] for s in sentences if s['start_ms'] < cand['end_ms'] and s['end_ms'] > cand['start_ms']]
+        compliance = request_compliance(kept, rejected, spec, window)
+        if notes:
+            compliance['notes'] = notes
+        seconds = round(time.time() - self._t0, 1)
+
+        request.update({
+            'schema_version': 1,
+            'request_id': request_id,
+            'status': 'done',
+            'spec': spec,
+            'summary': describe_spec(spec),
+            'window': window,
+            'scoring': {'weights': DIRECTOR_WEIGHTS, 'axes': DIRECTOR_AXES},
+            'candidates': kept,
+            'rejected': [{k: c.get(k) for k in ('title', 'start_ms', 'end_ms', 'score', 'speaker', 'rejected_for')} for c in rejected],
+            'compliance': compliance,
+            'llm_answers': self._payloads,
+            'answered_at': time.time(),
+            'seconds': seconds,
+        })
+        write_json(store, project.request(request_id), request)
+
+        requests = data.setdefault('requests', {})
+        requests[request_id] = {'prompt': request.get('prompt'), 'summary': request['summary'], 'delivered': len(kept),
+                                'requested': compliance['requested'], 'answered_at': request['answered_at']}
+        save_project(store, project, data)
+        update_status(store, project, NODE, 'directed', pipe, request=request_id, candidates=len(kept),
+                      proposed=len(proposed), rejected=len(rejected), seconds=seconds)
+        return {**project.to_ref(), 'request_id': request_id, 'spec': spec, 'summary': request['summary'],
+                'candidates': kept, 'rejected': request['rejected'], 'compliance': compliance, 'notes': notes,
+                'proposed': len(proposed), 'seconds': seconds}
 
     def _emit(self, payload: dict):
         answer = Answer(expectJson=True)
