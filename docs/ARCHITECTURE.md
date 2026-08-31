@@ -44,7 +44,7 @@ chat ─▶ podcast_ingest ─(audio, one stream per ≤45 s piece)─▶ audio_
 | Node | Kind | Job |
 | --- | --- | --- |
 | `podcast_ingest` | custom | Reads `project.json`, probes the source (`analysis/media.json`), cuts the audio into exact 16 kHz mono pieces and streams each as its own stream on the `audio` lane; forwards the episode reference (with the exact piece offsets) on `text`. With no audio listener wired (the index pipe) it only forwards the reference. |
-| `audio_transcribe` | **stock** | Whisper transcription. It stamps sentences relative to the audio buffer it flushed, so the ingest node feeds it pieces shorter than its 60 s buffer; the engine labels each relayed stream with `metadata.source.stream_index`, which is the piece number. |
+| `audio_transcribe` | **stock** | Whisper (`medium`) transcription. It stamps sentences relative to the audio buffer it flushed, so the ingest node feeds it pieces shorter than its 60 s buffer; the engine labels each relayed stream with `metadata.source.stream_index`, which is the piece number. |
 | `podcast_segment` | custom | Rebuilds absolute sentence times, writes `analysis/transcript.json` and `windows.json`, emits one rubric `Question` per ~10-minute part (questions lane) and — when an index is wired — overlapping 60 s / 30 s-step passages as documents keyed by the episode id. |
 | `llm_anthropic` | **stock** | Answers each question (JSON). The API key is `${ROCKETRIDE_ANTHROPIC_KEY}` in the pipe and is substituted by the engine from its own environment. |
 | `podcast_refine` | custom | Analysis mode: snaps proposals to sentence boundaries, enforces min/max length, removes overlaps, ranks by hook / clarity / standalone, writes `analysis/candidates.json`, `chapters.json`, `llm-answers.json`. |
@@ -259,8 +259,12 @@ Files (all times integer ms on the source timeline; the recording is never modif
 
 Renderer notes: the studio spec routes before the clip check (it carries `clip_id` for older guards) and takes
 its mode from the spec, not the node config; audio is one full-length pass (mutes, 1 kHz bleeps, music ducked
-with sidechaincompress, two-pass loudnorm) muxed under chunked video; intro / title card / body / end card /
-outro are concatenated parts. Verified end-to-end on `joe-berger-10min` (raw NAMM interview): init 90 s,
+with sidechaincompress); intro / title card / body / end card / outro are concatenated parts, the COMPLETE
+programme is assembled first, and two-pass loudnorm runs over the assembled programme so a hot intro or outro
+cannot push the finished file off target. The report (schema 2) carries top-level `has_audio`/`has_video`,
+`chapters` (array) + `chapter_count`, a `clock` block (mode / quality / range / preview_output_start_ms),
+and `loudness` + per-deliverable `measurements` measured on the finished MP4/MP3/WAV with `loudness_ok`
+(±1 LU, true peak ≤ −1 dBTP); a rough preview is unmastered and says so (`loudness_ok: null`). Verified end-to-end on `joe-berger-10min` (raw NAMM interview): init 90 s,
 rough preview = spec duration exactly, export 96 s at −16.0 LUFS / −1.0 dBTP with a −141 ms duration delta.
 
 UI: `/studio?id=…` — transcript-first editor (select words → cut / mute / bleep, struck-through restore,

@@ -3,26 +3,36 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Check, Loader2, Redo2, Sparkles, Undo2, Wand2 } from "lucide-react";
+import { Check, Loader2, Redo2, RefreshCw, Sparkles, TriangleAlert, Undo2, Wand2 } from "lucide-react";
 import { getConnectionState, mediaUrl, readJsonOr, subscribeConnection } from "@/lib/engine";
 import { prettyTitle, projectRoot, toSentences, type Project, type Sentence, type StatusEvent } from "@/lib/podcast";
 import { rememberEpisode } from "@/lib/recent";
 import { toast } from "@/components/shell/Toasts";
 import {
+  addCorrection,
   addOperation,
   applyAll,
+  applyProposalItem,
+  applySafeProposalItems,
   applySuggestion,
   assignSpeaker,
   canRedo,
   canUndo,
-  emptyEdits,
+  clockFromSpec,
+  discardProposal,
+  editsSignature,
   fmtDuration,
   initHistory,
+  isReviewOnly,
+  markReviewed,
   mergedCuts,
   outputDurationMs,
   pushHistory,
   redo,
+  rejectProposalItem,
   rejectSuggestion,
+  removeCorrection,
+  removeOperation,
   renameSpeaker,
   setSuggestionMode,
   splitSection,
@@ -31,22 +41,53 @@ import {
   timelineMapLite,
   toggleOperation,
   undo,
+  updateOperation,
+  wordId,
+  type Correction,
   type EditOperation,
+  type EditProposal,
+  type EditsVersion,
   type EpisodeEdits,
   type History,
+  type PlaybackClock,
+  type PreparedSpec,
+  type ProposalItem,
   type StudioReport,
   type StudioTimeline,
   type StudioWaveform,
   type Suggestion,
+  type SuggestionKind,
   type SuggestionMode,
+  CURRENT_ALIGN_VERSION,
 } from "@/lib/studio";
-import { loadStudio, runStudioExport, runStudioInit, runStudioPreview, saveEpisodeEdits, startStudioRun, studioRunKey, uploadAsset } from "@/lib/studio-engine";
-import StudioCanvas from "@/components/studio/StudioCanvas";
+import {
+  deleteProposal,
+  getSaveState,
+  isSaved,
+  loadPreparedSpec,
+  loadStudio,
+  loadVersion,
+  restoreEpisodeVersion,
+  runProposal,
+  runStudioExport,
+  runStudioInit,
+  runStudioPreview,
+  saveEpisodeEdits,
+  saveProposal,
+  startStudioRun,
+  studioRunKey,
+  subscribeSave,
+  uploadAsset,
+  type SaveState,
+} from "@/lib/studio-engine";
+import StudioCanvas, { type AuditionRequest } from "@/components/studio/StudioCanvas";
 import TimelineBar from "@/components/studio/TimelineBar";
 import TranscriptEditor, { type Range } from "@/components/studio/TranscriptEditor";
 import Inspector, { type DownloadLink, type JobKind } from "@/components/studio/Inspector";
 import SuggestionsPanel from "@/components/studio/SuggestionsPanel";
-import { INIT_STEPS, buildTranscript, initStep, markWords, rowAt, studioProgress, useJob } from "@/components/studio/helpers";
+import ProposalPanel from "@/components/studio/ProposalPanel";
+import VersionDialog from "@/components/studio/VersionDialog";
+import { INIT_STEPS, applySummary, buildTranscript, initStep, markWords, rowAt, studioProgress, useJob } from "@/components/studio/helpers";
 
 const serverState = () => "idle" as const;
 const RANGE_PAD_MS = 20_000;
@@ -67,7 +108,27 @@ const FILE_LABELS: Record<string, string> = {
   chapters_json: "Chapters",
 };
 
+/** What a file that would not open is called on screen. */
+const FAILED_LABELS: Record<string, string> = {
+  timeline: "the words",
+  waveform: "the sound",
+  suggestions: "the suggestions",
+  edits: "your edit",
+  project: "the episode details",
+};
+
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const IDLE_CLOCK: PlaybackClock = {
+  mode: "source",
+  map: null,
+  rangeOutStartMs: 0,
+  rangeOutEndMs: null,
+  approximate: true,
+  sourceDurationMs: 0,
+  outputDurationMs: 0,
+};
+const IDLE_SAVE: SaveState = { saving: false, queued: false, saved: null, savedSignature: null, savedAt: null, error: null };
+const idleSave = () => IDLE_SAVE;
 
 /** Static-export friendly route: /studio?id=<episode>. useSearchParams needs a Suspense boundary. */
 export default function StudioPage() {
@@ -87,36 +148,63 @@ function StudioWorkspace() {
   const [missing, setMissing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [timeline, setTimeline] = useState<StudioTimeline | null>(null);
+  const [timingRefresh, setTimingRefresh] = useState(false);
   const [waveform, setWaveform] = useState<StudioWaveform | null>(null);
   const [allSuggestions, setAllSuggestions] = useState<Suggestion[]>([]);
+  const [language, setLanguage] = useState("");
+  const [unsupported, setUnsupported] = useState<SuggestionKind[]>([]);
   const [sentences, setSentences] = useState<Sentence[]>([]);
   const [history, setHistory] = useState<History | null>(null);
-  const [savedJson, setSavedJson] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [baseline, setBaseline] = useState("");
+  const [loadFailed, setLoadFailed] = useState<string[]>([]);
+  const [editsFailed, setEditsFailed] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const lastSaveToast = useRef(0);
   const editsRef = useRef<EpisodeEdits | null>(null);
+  const blockedRef = useRef(false);
 
   const [currentMs, setCurrentMs] = useState(0);
   const [seekRequest, setSeekRequest] = useState<{ ms: number; at: number } | null>(null);
+  const [auditionRequest, setAuditionRequest] = useState<AuditionRequest | null>(null);
   const [selection, setSelection] = useState<Range | null>(null);
+  const [selectedOpId, setSelectedOpId] = useState<string | null>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState<string | null>(null);
+  const [applyNote, setApplyNote] = useState("");
 
   const [busy, setBusy] = useState<JobKind | null>(null);
   const [progress, setProgress] = useState("");
   const [reports, setReports] = useState<Partial<Record<JobKind, StudioReport>>>({});
   const [links, setLinks] = useState<DownloadLink[]>([]);
   const [preview, setPreview] = useState<{ url: string; stamp: string; label: string } | null>(null);
+  const [previewKind, setPreviewKind] = useState<"rough" | "range">("rough");
+  const [previewRange, setPreviewRange] = useState<[number, number] | null>(null);
+  const [spec, setSpec] = useState<PreparedSpec | null>(null);
+  const [specTick, setSpecTick] = useState(0);
   const canvasRef = useRef<HTMLDivElement>(null);
+
+  const [versionOpen, setVersionOpen] = useState<{ version: EditsVersion; snapshot: EpisodeEdits | null; loading: boolean } | null>(null);
+
+  const [proposal, setProposal] = useState<EditProposal | null>(null);
+  const [proposalBusy, setProposalBusy] = useState(false);
+  const [proposalProgress, setProposalProgress] = useState("");
+
+  const saveState = useSyncExternalStore(
+    useCallback((fn: () => void) => subscribeSave(id, fn), [id]),
+    useCallback(() => getSaveState(id), [id]),
+    idleSave
+  );
 
   const edits = history?.present ?? null;
   const prepareKey = useMemo(() => studioRunKey(id, "studio-prepare"), [id]);
   const prepareJob = useJob(prepareKey);
   const preparing = !!prepareJob && !prepareJob.done;
+  const blocked = editsFailed || loadFailed.length > 0;
 
   useEffect(() => {
     editsRef.current = edits;
+    blockedRef.current = blocked;
   });
 
   /* ---- loading ------------------------------------------------------------- */
@@ -134,12 +222,19 @@ function StudioWorkspace() {
     setTimeline(data.timeline);
     setWaveform(data.waveform);
     setAllSuggestions(data.suggestions);
+    setLanguage(data.language ?? "");
+    setUnsupported(data.unsupported);
+    setLoadFailed(data.failedFiles.map((key) => FAILED_LABELS[key] ?? key));
+    setEditsFailed(data.files.edits.failed);
     setSentences(toSentences(doc));
-    const loaded = data.edits ?? emptyEdits(p.media?.duration_ms ?? 0);
+    setLoading(false);
+    // a file that failed to load is not a file that isn't there: never start a
+    // fresh, empty edit on top of work that is only temporarily out of reach
+    if (data.files.edits.failed) return;
+    const loaded = data.edits ?? data.blank;
     editsRef.current = loaded;
     setHistory(initHistory(loaded));
-    setSavedJson(JSON.stringify(loaded));
-    setLoading(false);
+    setBaseline(editsSignature(loaded));
   }, [id, root]);
 
   useEffect(() => {
@@ -147,6 +242,15 @@ function StudioWorkspace() {
     const timer = setTimeout(() => void load(), 0);
     return () => clearTimeout(timer);
   }, [connection, id, load]);
+
+  const retry = useCallback(async () => {
+    setRetrying(true);
+    try {
+      await load();
+    } finally {
+      setRetrying(false);
+    }
+  }, [load]);
 
   const projectTitle = project?.title;
   const haveProject = project != null;
@@ -186,12 +290,26 @@ function StudioWorkspace() {
     };
   }, [logoPath]);
 
+  // the exact positions of a made version, when one exists for this revision
+  const revision = edits?.version ?? 0;
+  useEffect(() => {
+    if (!id || !revision) return;
+    let cancelled = false;
+    loadPreparedSpec(id, revision)
+      .then((found) => !cancelled && setSpec(found))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [id, revision, specTick]);
+
   /* ---- what the screens read ------------------------------------------------ */
 
   const transcript = useMemo(() => buildTranscript(timeline?.words ?? [], sentences), [timeline, sentences]);
   const operations = edits?.operations;
   const marks = useMemo(() => markWords(transcript.words, operations ?? []), [transcript.words, operations]);
   const cuts = useMemo(() => (edits ? mergedCuts(edits) : []), [edits]);
+  const fixes = useMemo<Map<string, Correction>>(() => new Map((edits?.corrections ?? []).map((c) => [c.word_id, c])), [edits]);
   const caption = useMemo(() => {
     const i = rowAt(transcript.rows, currentMs);
     if (i < 0) return "";
@@ -200,13 +318,26 @@ function StudioWorkspace() {
     const from = Math.max(0, (at < 0 ? row.words.length : at) - 4);
     return row.words
       .slice(from, from + 8)
-      .map((w) => w.text)
+      .map((w) => (w.k >= 0 ? fixes.get(wordId(w.k))?.text ?? w.text : w.text))
       .join(" ");
-  }, [transcript.rows, currentMs]);
+  }, [transcript.rows, currentMs, fixes]);
 
   const mode: SuggestionMode = edits?.suggestions?.mode ?? "balanced";
   const suggestions = useMemo(() => suggestionsForMode(allSuggestions, mode), [allSuggestions, mode]);
-  const openCount = useMemo(() => (edits ? suggestions.filter((s) => suggestionState(edits, s) === "open").length : 0), [suggestions, edits]);
+  const openCount = useMemo(
+    () => (edits ? suggestions.filter((s) => !isReviewOnly(s) && suggestionState(edits, s) === "open").length : 0),
+    [suggestions, edits]
+  );
+
+  // the picture and the transcript always talk in recording time; the player converts
+  const sourceClock = useMemo<PlaybackClock>(() => (edits ? clockFromSpec(spec, edits, "source") : IDLE_CLOCK), [spec, edits]);
+  const previewClock = useMemo<PlaybackClock>(
+    () =>
+      edits
+        ? clockFromSpec(spec, edits, previewKind === "range" ? "range_preview" : "rough_preview", previewRange ?? undefined)
+        : IDLE_CLOCK,
+    [spec, edits, previewKind, previewRange]
+  );
 
   /* ---- changing the edit ---------------------------------------------------- */
 
@@ -219,11 +350,11 @@ function StudioWorkspace() {
 
   const save = useCallback(
     async (next: EpisodeEdits, quiet = true) => {
-      setSaving(true);
+      if (blockedRef.current) return next;
       try {
+        // one write at a time: quick changes collapse into a single newest save
         const saved = await saveEpisodeEdits(id, next);
         setHistory((h) => (h && h.present === next ? { ...h, present: saved } : h));
-        setSavedJson(JSON.stringify(saved));
         const now = Date.now();
         if (!quiet || now - lastSaveToast.current > SAVE_TOAST_MS) {
           lastSaveToast.current = now;
@@ -233,44 +364,70 @@ function StudioWorkspace() {
       } catch (e) {
         toast(`Couldn't save your work: ${errorText(e)}`, "warn");
         return next;
-      } finally {
-        setSaving(false);
       }
     },
     [id]
   );
 
-  const editsJson = edits ? JSON.stringify(edits) : "";
-  const dirty = !!edits && editsJson !== savedJson;
+  // "saved" means exactly what is on screen reached the file — nothing else counts
+  const signature = edits ? editsSignature(edits) : "";
+  const saving = saveState.saving || saveState.queued;
+  const saveError = saveState.error;
+  // before anything has been written this session the file itself is the truth;
+  // after that only the save queue's own record of what landed counts
+  const dirty = !!edits && (saveState.savedSignature ? !isSaved(id, edits) : signature !== baseline);
 
   // autosave: everything is kept for you a couple of seconds after you stop changing things
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty || blocked) return;
     const timer = setTimeout(() => {
       const current = editsRef.current;
       if (current) void save(current);
     }, AUTOSAVE_MS);
     return () => clearTimeout(timer);
-  }, [dirty, editsJson, save]);
+  }, [dirty, blocked, signature, save]);
 
   const saveVersion = useCallback(
     async (note: string) => {
       const current = editsRef.current;
-      if (!current) return;
-      setSaving(true);
+      if (!current || blockedRef.current) return;
       try {
         const saved = await saveEpisodeEdits(id, current, { snapshot: true, note });
         setHistory((h) => (h ? { ...h, present: saved } : h));
-        setSavedJson(JSON.stringify(saved));
         toast(`Version ${saved.versions[saved.versions.length - 1]?.n ?? ""} saved`, "ok");
       } catch (e) {
         toast(`Couldn't save that version: ${errorText(e)}`, "warn");
-      } finally {
-        setSaving(false);
       }
     },
     [id]
   );
+
+  /* ---- versions ------------------------------------------------------------- */
+
+  const openVersion = useCallback(
+    (version: EditsVersion) => {
+      setVersionOpen({ version, snapshot: null, loading: true });
+      loadVersion(id, version.n)
+        .then((snapshot) => setVersionOpen((held) => (held && held.version.n === version.n ? { ...held, snapshot, loading: false } : held)))
+        .catch(() => setVersionOpen((held) => (held && held.version.n === version.n ? { ...held, snapshot: null, loading: false } : held)));
+    },
+    [id]
+  );
+
+  const restore = useCallback(async () => {
+    const current = editsRef.current;
+    const n = versionOpen?.version.n;
+    if (!current || !versionOpen?.snapshot || n == null) return;
+    setVersionOpen(null);
+    try {
+      // going back is a step forward: it becomes the newest version, nothing is rewritten
+      const restored = await restoreEpisodeVersion(id, current, n);
+      setHistory((h) => (h ? pushHistory(h, restored) : initHistory(restored)));
+      toast(`Back at save point ${n} — undo with U`, "ok");
+    } catch (e) {
+      toast(`Couldn't go back to that version: ${errorText(e)}`, "warn");
+    }
+  }, [id, versionOpen]);
 
   /* ---- editor actions ------------------------------------------------------- */
 
@@ -279,12 +436,26 @@ function StudioWorkspace() {
     setSeekRequest({ ms, at: Date.now() });
   }, []);
 
+  const audition = useCallback((range: { start_ms: number; end_ms: number }) => {
+    setAuditionRequest({ start_ms: range.start_ms, end_ms: range.end_ms, at: Date.now() });
+  }, []);
+
   const act = useCallback(
     (type: EditOperation, range: Range) => {
       commit((prev) => addOperation(prev, { type, start_ms: range.start_ms, end_ms: range.end_ms, source: "user" }));
     },
     [commit]
   );
+
+  const pickRange = useCallback((range: Range | null) => {
+    setSelection(range);
+    if (range) setSelectedOpId(null);
+  }, []);
+
+  const pickOperation = useCallback((opId: string | null) => {
+    setSelectedOpId(opId);
+    if (opId) setSelection(null);
+  }, []);
 
   const speakerTo = useCallback(
     (range: Range, choice: string | null) => {
@@ -306,6 +477,101 @@ function StudioWorkspace() {
     [commit]
   );
 
+  const applyEverything = useCallback(() => {
+    const before = editsRef.current;
+    if (!before) return;
+    const result = applyAll(before, allSuggestions, before.suggestions.mode);
+    setHistory((h) => (h ? pushHistory(h, result.edits) : h));
+    const note = applySummary(result);
+    setApplyNote(note);
+    toast(result.applied ? `${note} — undo with U` : "Nothing left to apply", result.applied ? "ok" : "info");
+  }, [allSuggestions]);
+
+  /* ---- a drafted edit -------------------------------------------------------- */
+
+  const draftEdit = useCallback(
+    async (goal: string, pick: SuggestionMode) => {
+      if (proposalBusy) return;
+      setProposalBusy(true);
+      setProposalProgress("Reading the episode…");
+      try {
+        const drafted = await runProposal(id, goal, pick, {}, (evt) => setProposalProgress(studioProgress(evt)));
+        setProposal(drafted);
+        toast(
+          drafted.items.length ? `${drafted.items.length} changes drafted — nothing applied yet` : "Nothing worth cutting for that",
+          drafted.items.length ? "ok" : "info"
+        );
+      } catch (e) {
+        toast(`Couldn't draft that edit: ${errorText(e)}`, "warn");
+      } finally {
+        setProposalBusy(false);
+        setProposalProgress("");
+      }
+    },
+    [id, proposalBusy]
+  );
+
+  /** Keep the drafted list on file in step with what was taken or turned down. */
+  const rememberProposal = useCallback(
+    (next: EditProposal) => {
+      setProposal(next);
+      void saveProposal(id, next).catch(() => {});
+    },
+    [id]
+  );
+
+  const takeItem = useCallback(
+    (item: ProposalItem) => {
+      const held = proposal;
+      if (!held) return;
+      const current = editsRef.current;
+      if (!current) return;
+      const result = applyProposalItem(current, held, item.id);
+      if (!result.applied) return;
+      setHistory((h) => (h ? pushHistory(h, result.edits) : h));
+      rememberProposal(result.proposal);
+    },
+    [proposal, rememberProposal]
+  );
+
+  const dropItem = useCallback(
+    (item: ProposalItem) => {
+      const held = proposal;
+      const current = editsRef.current;
+      if (!held || !current) return;
+      const result = rejectProposalItem(current, held, item.id);
+      if (result.edits !== current) setHistory((h) => (h ? pushHistory(h, result.edits) : h));
+      rememberProposal(result.proposal);
+    },
+    [proposal, rememberProposal]
+  );
+
+  const takeSafeItems = useCallback(() => {
+    const held = proposal;
+    const current = editsRef.current;
+    if (!held || !current) return;
+    const result = applySafeProposalItems(current, held);
+    if (!result.applied) {
+      toast("Nothing safe enough to take on its own", "info");
+      return;
+    }
+    setHistory((h) => (h ? pushHistory(h, result.edits) : h));
+    rememberProposal(result.proposal);
+    toast(
+      `${result.applied} changes taken${result.skipped_conflict ? `, ${result.skipped_conflict} skipped (they overlap an edit)` : ""} — undo with U`,
+      "ok"
+    );
+  }, [proposal, rememberProposal]);
+
+  const dropProposal = useCallback(() => {
+    const held = proposal;
+    if (!held) return;
+    commit((prev) => discardProposal(prev, held.id));
+    setProposal(null);
+    void deleteProposal(id, held.id).catch(() => {});
+    toast("Draft thrown away — nothing from it is left in your edit", "info");
+  }, [commit, id, proposal]);
+
   /* ---- previews and export --------------------------------------------------- */
 
   const rangeAround = useCallback((): [number, number] => {
@@ -325,11 +591,12 @@ function StudioWorkspace() {
       const onProgress = (evt: StatusEvent) => setProgress(studioProgress(evt));
       try {
         const stored = dirty ? await save(current) : current;
-        const stamp = JSON.stringify(stored);
+        const stamp = editsSignature(stored);
+        const range = kind === "range" ? rangeAround() : null;
         const report =
           kind === "export"
             ? await runStudioExport(id, onProgress)
-            : await runStudioPreview(id, kind === "rough" ? { quality: "rough" } : { quality: "full", range: rangeAround() }, onProgress);
+            : await runStudioPreview(id, kind === "rough" ? { quality: "rough" } : { quality: "full", range: range ?? rangeAround() }, onProgress);
         if (report.error) throw new Error(report.error);
         setReports((prev) => ({ ...prev, [kind]: report }));
         const entries = Object.entries(report.files ?? {}).filter(([key]) => key !== "report" && key !== "parts");
@@ -345,8 +612,12 @@ function StudioWorkspace() {
         const video = entries.find(([key, path]) => path.endsWith(".mp4") || key === "video" || key === "episode");
         if (video && kind !== "export") {
           const url = await mediaUrl(video[1], report.rendered_at ?? "");
+          setPreviewKind(kind === "rough" ? "rough" : "range");
+          setPreviewRange(kind === "range" ? range : null);
           setPreview({ url, stamp, label: kind === "rough" ? "edited preview" : "this part" });
         }
+        // the made version carries the exact positions — use them from now on
+        setSpecTick((n) => n + 1);
         toast(kind === "export" ? "Your episode is ready" : "Preview ready", "ok");
       } catch (e) {
         toast(`${kind === "export" ? "The export" : "The preview"} stopped: ${errorText(e)}`, "warn");
@@ -382,9 +653,9 @@ function StudioWorkspace() {
 
   /* ---- keyboard ------------------------------------------------------------- */
 
-  const keys = useRef({ stepBack, stepForward });
+  const keys = useRef({ stepBack, stepForward, selectedOpId, commit, pickOperation });
   useEffect(() => {
-    keys.current = { stepBack, stepForward };
+    keys.current = { stepBack, stepForward, selectedOpId, commit, pickOperation };
   });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -399,6 +670,20 @@ function StudioWorkspace() {
         return;
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // a change picked on the sound bar answers to Delete and U first
+      if (k.selectedOpId && (e.key === "Delete" || e.key === "Backspace")) {
+        e.preventDefault();
+        const opId = k.selectedOpId;
+        k.commit((prev) => removeOperation(prev, opId));
+        k.pickOperation(null);
+        return;
+      }
+      if (k.selectedOpId && (e.key === "u" || e.key === "U")) {
+        e.preventDefault();
+        const opId = k.selectedOpId;
+        k.commit((prev) => toggleOperation(prev, opId));
+        return;
+      }
       if (e.key === "u") {
         e.preventDefault();
         k.stepBack();
@@ -448,6 +733,22 @@ function StudioWorkspace() {
           </div>
           <div className="rr-skeleton h-[520px]" />
         </div>
+      </div>
+    );
+  }
+
+  // your own work would not open: never start again on top of it
+  if (editsFailed) {
+    return (
+      <div className="rr-card rr-enter mx-auto mt-10 max-w-lg px-6 py-12 text-center">
+        <TriangleAlert className="mx-auto h-6 w-6 text-processing" />
+        <p className="rr-h3 mt-3">We couldn&apos;t open your edit</p>
+        <p className="mx-auto mt-1 max-w-sm text-sm text-ink-faint">
+          Your work is safe where it is — it just didn&apos;t come back this time. Nothing will be changed until it opens.
+        </p>
+        <button type="button" className="rr-btn rr-btn-primary mt-5" disabled={retrying} onClick={() => void retry()}>
+          {retrying ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Try again
+        </button>
       </div>
     );
   }
@@ -516,10 +817,33 @@ function StudioWorkspace() {
 
   const sourceMs = edits.source_duration_ms || project.media?.duration_ms || timeline.duration_ms || 0;
   const finalMs = outputDurationMs(edits);
-  const previewFresh = !!preview && preview.stamp === savedJson;
+  const previewFresh = !!preview && preview.stamp === signature;
+  const savedLabel = saving ? "saving…" : saveError ? "not saved" : dirty ? "unsaved" : "saved";
+
+  const timingStale = (timeline.align_version ?? 1) !== CURRENT_ALIGN_VERSION;
 
   return (
     <div className="space-y-4">
+      {timingStale && (
+        <div className="rr-enter flex flex-wrap items-center justify-between gap-3 rounded-md border border-processing/40 bg-processing/10 px-3.5 py-2.5">
+          <p className="text-sm text-ink">
+            Word timing has improved since this episode was prepared — captions will sync better after a quick refresh.
+          </p>
+          <button
+            type="button"
+            className="rr-btn rr-btn-sm"
+            disabled={timingRefresh || connection !== "connected"}
+            onClick={() => {
+              setTimingRefresh(true);
+              void runStudioInit(id)
+                .then(() => load())
+                .finally(() => setTimingRefresh(false));
+            }}
+          >
+            {timingRefresh ? "Refreshing timing…" : "Refresh timing"}
+          </button>
+        </div>
+      )}
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
           <p className="rr-eyebrow">Podcast Studio</p>
@@ -530,7 +854,7 @@ function StudioWorkspace() {
           </p>
         </div>
         <div className="flex items-center gap-1.5">
-          <span className="rr-mono text-ink-faint">{saving ? "saving…" : dirty ? "unsaved" : "saved"}</span>
+          <span className={`rr-mono ${saveError ? "text-danger" : "text-ink-faint"}`}>{savedLabel}</span>
           <button type="button" className="rr-btn rr-btn-ghost rr-btn-sm" onClick={stepBack} title="Undo (U)" disabled={!canUndo(history)}>
             <Undo2 className="h-3.5 w-3.5" /> Undo
           </button>
@@ -542,6 +866,36 @@ function StudioWorkspace() {
           </Link>
         </div>
       </header>
+
+      {loadFailed.length ? (
+        <div className="rr-card flex flex-wrap items-center gap-2 border-processing/50 px-3.5 py-2.5 text-sm">
+          <TriangleAlert className="h-4 w-4 shrink-0 text-processing" />
+          <span className="min-w-0">
+            We couldn&apos;t open {loadFailed.join(" and ")} just now. Editing is paused so nothing is written over it.
+          </span>
+          <button type="button" className="rr-btn rr-btn-sm ml-auto" disabled={retrying} onClick={() => void retry()}>
+            {retrying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Try again
+          </button>
+        </div>
+      ) : null}
+
+      {saveError ? (
+        <div className="rr-card flex flex-wrap items-center gap-2 border-danger/50 px-3.5 py-2.5 text-sm">
+          <TriangleAlert className="h-4 w-4 shrink-0 text-danger" />
+          <span className="min-w-0">Your last change wasn&apos;t saved: {saveError}</span>
+          <button
+            type="button"
+            className="rr-btn rr-btn-sm ml-auto"
+            disabled={saving}
+            onClick={() => {
+              const current = editsRef.current;
+              if (current) void save(current, false);
+            }}
+          >
+            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Save again
+          </button>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
         <div className="min-w-0 space-y-4">
@@ -556,6 +910,10 @@ function StudioWorkspace() {
               logoUrl={logoUrl}
               currentMs={currentMs}
               seekRequest={seekRequest}
+              auditionRequest={auditionRequest}
+              sourceClock={sourceClock}
+              previewClock={previewClock}
+              approximate={sourceClock.approximate}
               onTime={setCurrentMs}
             />
           </div>
@@ -566,8 +924,21 @@ function StudioWorkspace() {
             cuts={cuts}
             operations={edits.operations}
             sections={edits.sections}
+            words={timeline.words ?? []}
             currentMs={currentMs}
+            selection={selection}
+            selectedOpId={selectedOpId}
             onSeek={seek}
+            onSelect={pickRange}
+            onSelectOp={pickOperation}
+            onResizeOp={(opId, start, end) => commit((prev) => updateOperation(prev, opId, { start_ms: start, end_ms: end }))}
+            onRemoveOp={(opId) => {
+              commit((prev) => removeOperation(prev, opId));
+              setSelectedOpId(null);
+            }}
+            onToggleOp={(opId) => commit((prev) => toggleOperation(prev, opId))}
+            onAudition={audition}
+            onRemoveRange={(range) => act("cut", range)}
           />
 
           <TranscriptEditor
@@ -582,7 +953,11 @@ function StudioWorkspace() {
             onAssignSpeaker={speakerTo}
             onRenameSpeaker={(speakerId, name) => commit((prev) => renameSpeaker(prev, speakerId, name))}
             onAddSection={addChapter}
-            onSelection={setSelection}
+            onSelection={pickRange}
+            syncSelection={selection}
+            corrections={fixes}
+            onCorrect={(word, text, original) => commit((prev) => addCorrection(prev, word, text, original))}
+            onRevertCorrection={(word) => commit((prev) => removeCorrection(prev, word))}
           />
         </div>
 
@@ -590,6 +965,7 @@ function StudioWorkspace() {
           <Inspector
             edits={edits}
             suggestionCount={openCount}
+            applySummary={applyNote}
             dirty={dirty}
             saving={saving}
             busy={busy}
@@ -602,11 +978,9 @@ function StudioWorkspace() {
             onPatchVisual={(patch) => commit((prev) => ({ ...prev, visual: { ...prev.visual, ...patch } }))}
             onPatchCaptions={(patch) => commit((prev) => ({ ...prev, visual: { ...prev.visual, caption_style: { ...prev.visual.caption_style, ...patch } } }))}
             onMode={(next) => commit((prev) => setSuggestionMode(prev, next))}
-            onApplyAll={() => {
-              commit((prev) => applyAll(prev, allSuggestions, prev.suggestions.mode));
-              toast(openCount ? `${openCount} changes applied — undo with U` : "Nothing left to apply", openCount ? "ok" : "info");
-            }}
+            onApplyAll={applyEverything}
             onSaveVersion={(note) => void saveVersion(note)}
+            onOpenVersion={openVersion}
             onUpload={(kind, file) => void upload(kind, file)}
             onRemoveAsset={(kind) =>
               commit((prev) => {
@@ -618,12 +992,31 @@ function StudioWorkspace() {
             onRun={(kind) => void run(kind)}
           />
 
+          <ProposalPanel
+            proposal={proposal}
+            edits={edits}
+            busy={proposalBusy}
+            progress={proposalProgress}
+            mode={mode}
+            onDraft={(goal, pick) => void draftEdit(goal, pick)}
+            onApply={takeItem}
+            onReject={dropItem}
+            onApplySafe={takeSafeItems}
+            onDiscard={dropProposal}
+            onAudition={audition}
+          />
+
           <SuggestionsPanel
             suggestions={suggestions}
             edits={edits}
+            language={language}
+            unsupported={unsupported}
+            summary={applyNote}
             onAccept={(s) => commit((prev) => applySuggestion(prev, s))}
             onReject={(s) => commit((prev) => rejectSuggestion(prev, s))}
             onPlay={seek}
+            onAudition={audition}
+            onMarkReviewed={(sid) => commit((prev) => markReviewed(prev, sid))}
             onToggleOperation={(opId) => commit((prev) => toggleOperation(prev, opId))}
           />
 
@@ -652,6 +1045,16 @@ function StudioWorkspace() {
           </p>
         </aside>
       </div>
+
+      {versionOpen ? (
+        <VersionDialog
+          version={versionOpen.version}
+          snapshot={versionOpen.snapshot}
+          loading={versionOpen.loading}
+          onRestore={() => void restore()}
+          onClose={() => setVersionOpen(null)}
+        />
+      ) : null}
     </div>
   );
 }

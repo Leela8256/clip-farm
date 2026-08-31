@@ -72,7 +72,7 @@ export default function HomePage() {
     <div className="mx-auto max-w-3xl pt-6 sm:pt-12 lg:pt-20">
       <section className="rr-enter text-center">
         <h1 className="rr-display text-balance">
-          Find the <span className="rr-underline">moments</span>. Cut the clips. Ship them.
+          Find the <span className="rr-underline">moments</span>. Cut the clips. Post them.
         </h1>
         <p className="mx-auto mt-5 max-w-xl text-lg text-ink-dim">Drop in a full episode and get back the short clips worth posting.</p>
       </section>

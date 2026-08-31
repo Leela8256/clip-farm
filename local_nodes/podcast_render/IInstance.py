@@ -6,9 +6,11 @@ Two paths share this node:
 * the clip path (spec with `clip_id`) — unchanged: audio clean-up + mastering,
   the cut/reframe/caption video graph, sidecars, thumbnail, report, registry.
 * the studio path (spec with `studio`) — a whole edited episode: one full-length
-  audio pass (cuts, mutes, bleeps, ducked music, two-pass mastering), the picture
-  in resumable ~5 minute parts with burned captions and the logo, intro/outro and
-  title/end cards concatenated around it, then MP3/WAV/SRT/VTT/chapters/report.
+  audio pass (cuts, mutes, bleeps, ducked music), the picture in resumable ~5
+  minute parts with burned captions and the logo, intro/outro and title/end cards
+  concatenated around it, the two-pass mastering run LAST over the complete
+  assembled programme, then MP3/WAV/SRT/VTT/chapters and a report (schema 2)
+  whose loudness figures are measured on the finished deliverables.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from local_nodes.podcast_common.media import (
     conform_audio,
     encode_audio_deliverable,
     ffmetadata_chapters,
+    master_wav,
     measure_loudness,
     mux_episode,
     plan_episode_parts,
@@ -61,6 +64,7 @@ from local_nodes.podcast_common.media import (
 )
 from local_nodes.podcast_common.clips import TimelineMap, map_words_to_output
 from local_nodes.podcast_common.captions import build_ass, build_srt, build_vtt, group_words, seam_placement
+from local_nodes.podcast_common.studio import build_studio_report
 
 from .IGlobal import IGlobal
 
@@ -442,19 +446,31 @@ class IInstance(IInstanceBase):
             else:
                 audio_pieces.append({'path': None})
 
-            # ---- sound: one full-length pass so the two-pass loudness is correct
+            # ---- sound: the edited body first (cuts, mutes, bleeps, clean-up,
+            # ducked music) — deliberately UNMASTERED here
             update_status(store, project, NODE, 'mastering', pipe, mode='studio', quality=quality, version=version,
                           master=master)
+            target_lufs = float(audio_cfg.get('loudness_lufs') or -16)
             body_wav = render_episode_audio(
                 local, keep, work / 'body.wav', mutes=mutes, bleeps=bleeps,
                 noise_reduction=clean[0], high_pass=clean[1], compression=clean[2],
-                music_path=music_path, music=music_cfg, master=master,
-                loudness_lufs=float(audio_cfg.get('loudness_lufs') or -16), channels=channels,
+                music_path=music_path, music=music_cfg, master=False,
+                loudness_lufs=target_lufs, channels=channels,
             )
             for piece in audio_pieces:
                 if piece.get('path') is None and 'silence_ms' not in piece:
                     piece['path'] = str(body_wav)
-            final_wav = assemble_episode_audio(audio_pieces, work / 'episode-audio.wav', channels=channels)
+            program_wav = assemble_episode_audio(audio_pieces, work / 'episode-audio.wav', channels=channels)
+
+            # ---- mastering LAST: the two-pass loudnorm runs over the complete
+            # programme (intro, title card, body, end card, outro), so what the
+            # listener actually gets is what lands on the target — mastering the
+            # body alone let a loud intro or a silent card pull the finished
+            # file off -16 LUFS.
+            final_wav = program_wav
+            if master:
+                final_wav = master_wav(program_wav, work / 'episode-master.wav',
+                                       loudness_lufs=target_lufs, channels=channels)
 
             # ---- join + mux
             if has_video:
@@ -463,8 +479,12 @@ class IInstance(IInstanceBase):
             else:
                 final = encode_audio_deliverable(final_wav, work / 'episode.mp3')
 
+            # every measurement below is taken on a FINISHED deliverable
             check = probe(final)
             loudness = measure_loudness(final)
+            measurements: dict = {}
+            if loudness:
+                measurements['mp4' if has_video else 'mp3'] = loudness
             total_ms = lead_ms + body_ms + tail_ms
             extras = [a for a in (spec.get('extra_aspects') or visual.get('extra_aspects') or []) if str(a) != aspect]
 
@@ -478,10 +498,14 @@ class IInstance(IInstanceBase):
                                                fps=fps, crf=crf, preset=x264, fit=fit, background=background)
                         files[f"episode_{str(extra).replace(':', 'x')}"] = write_file(
                             store, project.exports(f"{export_dir}/episode-{str(extra).replace(':', 'x')}.mp4"), alt)
-                files['mp3'] = write_file(store, project.exports(f'{export_dir}/episode.mp3'),
-                                          encode_audio_deliverable(final_wav, work / 'episode.mp3'))
-                files['wav'] = write_file(store, project.exports(f'{export_dir}/episode.wav'),
-                                          encode_audio_deliverable(final_wav, work / 'episode.wav'))
+                mp3_local = encode_audio_deliverable(final_wav, work / 'episode.mp3')
+                files['mp3'] = write_file(store, project.exports(f'{export_dir}/episode.mp3'), mp3_local)
+                wav_local = encode_audio_deliverable(final_wav, work / 'episode.wav')
+                files['wav'] = write_file(store, project.exports(f'{export_dir}/episode.wav'), wav_local)
+                if has_video:
+                    measurements['mp3'] = measure_loudness(mp3_local)
+                measurements['wav'] = measure_loudness(wav_local)
+                measurements = {k: v for k, v in measurements.items() if v}
                 shifted = shift_groups(groups, -lead_ms) if lead_ms else groups
                 if shifted:
                     srt = work / 'captions.srt'
@@ -507,54 +531,17 @@ class IInstance(IInstanceBase):
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
-        delta = check['duration_ms'] - total_ms
         seconds = round(time.time() - self._t0, 1)
-        report = {
-            'schema_version': 1,
-            'kind': 'studio',
-            'mode': mode,
-            'quality': quality,
-            'version': version,
-            'title': spec.get('title'),
-            'range': [int(rng[0]), int(rng[1])] if rng else None,
-            'duration_ms': check['duration_ms'],
-            'output_duration_ms': total_ms,
-            'body_duration_ms': body_ms,
-            'lead_ms': lead_ms,
-            'tail_ms': tail_ms,
-            'files': files,
-            'aspect_ratio': aspect,
-            'extra_aspects': extras if mode == 'export' else [],
-            'width': check['width'],
-            'height': check['height'],
-            'fps': fps,
-            'cuts': max(0, len(full_keep) - 1),
-            'muted': len(mutes),
-            'bleeped': len(bleeps),
-            'captions': bool(captions_on),
-            'caption_lines': len(groups) if captions_on else 0,
-            'chapters': len(chapters),
-            'mastered': bool(master),
-            'music': bool(music_path),
-            'loudness': loudness,
-            'loudness_target_lufs': float(audio_cfg.get('loudness_lufs') or -16) if master else None,
-            'parts': part_times,
-            'spec_hash': hashed,
-            'warnings': warnings_out,
-            'validation': {
-                'expected_duration_ms': total_ms,
-                'duration_ms': check['duration_ms'],
-                'delta_ms': delta,
-                'duration_ok': abs(delta) <= 500,
-                'has_video': check['has_video'],
-                'has_audio': check['has_audio'],
-                'streams_ok': bool(check['has_audio'] and (check['has_video'] or not has_video)),
-            },
-            'rendered_at': time.time(),
-            'seconds': seconds,
-        }
-        if not report['validation']['duration_ok']:
-            warnings_out.append(f'The finished file is {delta / 1000:.1f}s off the planned length.')
+        report = build_studio_report(
+            mode=mode, quality=quality, version=version, title=spec.get('title'), check=check,
+            measured=loudness, measurements=measurements, target_lufs=target_lufs, mastered=bool(master),
+            rng=rng, preview_output_start_ms=offset_ms, total_ms=total_ms, body_ms=body_ms,
+            lead_ms=lead_ms, tail_ms=tail_ms, files=files, aspect=aspect,
+            extras=extras if mode == 'export' else [], fps=fps, cuts=max(0, len(full_keep) - 1),
+            mutes=len(mutes), bleeps=len(bleeps), captions_on=bool(captions_on),
+            caption_lines=len(groups) if captions_on else 0, chapters=chapters, music=bool(music_path),
+            expect_video=has_video, parts=part_times, spec_hash=hashed, warnings=warnings_out,
+            seconds=seconds)
         if mode == 'export':
             write_json(store, project.exports(f'{export_dir}/report.json'), report)
             try:

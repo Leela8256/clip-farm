@@ -64,7 +64,7 @@ stock node was or wasn't used: [`docs/NODE_CATALOG.md`](docs/NODE_CATALOG.md).
 9. **Library** — every project is a folder in your RocketRide store; reopening it restores the
    workspace, and an analysis keeps running on the engine if you reload the page.
 
-Measured on a 10-minute 720p episode (M-series Mac, `small` Whisper): analysis 102 s
+Measured on a 10-minute 720p episode (M-series Mac, `small` Whisper — now `medium` by default, roughly 2× the transcription time for noticeably better words): analysis 102 s
 (transcription 66 s, Claude 36 s) → 7 candidates + 4 chapters; index 1 s; visual scan 19 s;
 prompt parse 6 s; directed search 27 s; preview 25 s (of which people tracking ≈ 10 s);
 export ≈ 45 s.

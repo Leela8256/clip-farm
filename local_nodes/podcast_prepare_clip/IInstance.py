@@ -20,6 +20,8 @@ word and writes analysis/studio/{timeline,waveform,suggestions}.json;
 'preview'/'export' read the browser's edits/episode-edits.json and assemble
 analysis/studio/prepared-v<version>.json — the episode render spec — with an
 optional 'range: <a>-<b>' (output-timeline ms) and 'quality: rough | full'.
+The edit file's `corrections` (transcript fixes keyed by word id) are applied
+to the caption text on the way through; they never move a timestamp.
 
 Output (text lane): the clip plan (or, in studio mode, the episode spec) that
 podcast_render consumes, persisted at analysis/clips/<id>/plan.json next to
@@ -171,6 +173,7 @@ class IInstance(IInstanceBase):
             return spec, {**project.to_ref(), 'studio': step, 'version': spec['version'],
                           'output_duration_ms': spec['output_duration_ms'], 'quality': spec['quality'],
                           'range': spec['range'], 'chapters': len(spec['chapters']),
+                          'corrections': spec.get('corrections_applied', 0),
                           'spec': project.analysis(f"studio/prepared-v{spec['version']}.json"),
                           'warnings': spec['warnings']}
         raise ValueError(f"{NODE}: unknown studio step {step!r} — use 'studio: init | preview | export'")
@@ -189,7 +192,7 @@ class IInstance(IInstanceBase):
         duration_ms = int(media.get('duration_ms') or transcript.get('duration_ms') or 0)
         if duration_ms <= 0:
             raise ValueError(f'{NODE}: the recording length is unknown — run the episode analysis first')
-        model = str(cfg.get('studio_model') or cfg['model'])
+        model = str(ctx.get('model') or cfg.get('studio_model') or cfg['model'])
 
         update_status(store, project, NODE, 'preparing', pipe, studio='init', duration_ms=duration_ms, model=model)
         local = local_source(store, source)
@@ -237,7 +240,7 @@ class IInstance(IInstanceBase):
                                            language=language)
         suggestions = studio_lib.build_suggestions(words, silences=silences, quiet=quiet,
                                                    low_confidence=low_confidence, sentences=sentences,
-                                                   duration_ms=duration_ms)
+                                                   duration_ms=duration_ms, language=language)
         waveform = studio_lib.waveform_doc(peaks, duration_ms)
         write_json(store, project.analysis('studio/timeline.json'), timeline)
         write_json(store, project.analysis('studio/waveform.json'), waveform)
@@ -248,6 +251,7 @@ class IInstance(IInstanceBase):
                       suggestions=len(suggestions['suggestions']), duration_ms=duration_ms, seconds=seconds)
         return {**project.to_ref(), 'studio': 'init', 'words': len(words),
                 'suggestions': len(suggestions['suggestions']), 'duration_ms': duration_ms,
+                'language': language, 'unsupported': suggestions['unsupported'],
                 'levels': {level: len(ids) for level, ids in suggestions['modes'].items()},
                 'silences': len(timeline['silences']), 'peaks': len(peaks), 'seconds': seconds,
                 'files': {'timeline': project.analysis('studio/timeline.json'),
@@ -360,9 +364,11 @@ class IInstance(IInstanceBase):
             i0 = max(0, start - pad)
             i1 = min(duration_ms, end + pad) if duration_ms else end + pad
             wav = slice_audio(local, i0, i1, work / 'interval.wav')
+            # `model: large-v3` in the request context overrides the node's configured model per render
+            align_model = str(ctx.get('model') or cfg['model'])
             update_status(store, project, NODE, 'aligning', pipe, clip=clip_id, seconds=round((i1 - i0) / 1000, 1),
-                          model=cfg['model'])
-            aligned = align_words(wav, str(cfg['model']), str(cfg['language'] or '') or None, hint=cand.get('quote'))
+                          model=align_model)
+            aligned = align_words(wav, align_model, str(cfg['language'] or '') or None, hint=cand.get('quote'))
             words = [{**w, 'start_ms': w['start_ms'] + i0, 'end_ms': w['end_ms'] + i0} for w in aligned['words']]
 
             # a candidate's own words beat the coarse sentence boundaries; explicit user

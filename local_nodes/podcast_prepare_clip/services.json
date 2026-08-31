@@ -1,25 +1,30 @@
 {
   "title": "Podcast Prepare Clip",
   "protocol": "podcast_prepare_clip://",
-  "classType": ["text"],
+  "classType": [
+    "text"
+  ],
   "capabilities": [],
   "register": "filter",
   "node": "python",
   "path": "local_nodes.podcast_prepare_clip",
   "prefix": "podcast_prepare_clip",
   "description": [
-    "Resolves one clip of an analysed episode (an analysis candidate, a Prompt Director candidate, a saved edit version, or explicit start/end) into a render-ready plan: extracts the interval, aligns word timestamps with faster-whisper, snaps the boundaries to word edges, plans filler/pause edits with safety rules (smart / cut / mute / keep, per-cut restore), fits the duration to the requested target (natural / strict / maximum — never through a word) and writes analysis/clips/<id>/plan.json + compliance.json. The plan goes out on the text lane (for podcast_layout / podcast_render) and, when a video listener is wired, a small copy of the clip goes out on the video lane for the stock frame grabber + pose estimator (phase 2 layouts). Chat context lines: 'project:', 'clip:', optional 'start:', 'end:', 'title:', 'captions:', 'layouts:', 'fillers:', 'silences:', 'duration:', 'mode:', 'version:', 'restore:', 'layout: auto|solo|stacked|screen|full|original', 'subject: p2'."
+    "Resolves one clip of an analysed episode (an analysis candidate, a Prompt Director candidate, a saved edit version, or explicit start/end) into a render-ready plan: extracts the interval, aligns word timestamps with faster-whisper, snaps the boundaries to word edges, plans filler/pause edits with safety rules (smart / cut / mute / keep, per-cut restore), fits the duration to the requested target (natural / strict / maximum \u2014 never through a word) and writes analysis/clips/<id>/plan.json + compliance.json. The plan goes out on the text lane (for podcast_layout / podcast_render) and, when a video listener is wired, a small copy of the clip goes out on the video lane for the stock frame grabber + pose estimator (phase 2 layouts). Chat context lines: 'project:', 'clip:', optional 'start:', 'end:', 'title:', 'captions:', 'layouts:', 'fillers:', 'silences:', 'duration:', 'mode:', 'version:', 'restore:', 'layout: auto|solo|stacked|screen|full|original', 'model: tiny|base|small|medium|large-v3' (word-timing model override for this render), 'subject: p2'."
   ],
   "icon": "podcast-prepare-clip.svg",
   "documentation": "https://docs.rocketride.org",
   "lanes": {
-    "questions": ["text", "video"]
+    "questions": [
+      "text",
+      "video"
+    ]
   },
   "preconfig": {
     "default": "default",
     "profiles": {
       "default": {
-        "model": "small",
+        "model": "medium",
         "language": "en",
         "pad_seconds": 2,
         "filler_policy": "smart",
@@ -32,31 +37,111 @@
   "fields": {
     "podcast_prepare_clip.model": {
       "type": "string",
-      "title": "Alignment model (faster-whisper)",
-      "default": "small",
-      "enum": [["tiny", "tiny"], ["base", "base"], ["small", "small"], ["medium", "medium"]]
+      "title": "Word-timing model",
+      "default": "medium",
+      "enum": [
+        [
+          "tiny",
+          "tiny (fastest)"
+        ],
+        [
+          "base",
+          "base"
+        ],
+        [
+          "small",
+          "small"
+        ],
+        [
+          "medium",
+          "medium (default \u2014 best timing in our tests)"
+        ],
+        [
+          "large-v3",
+          "large-v3 (best vocabulary; word timing can drift \u2014 verify before adopting)"
+        ]
+      ]
     },
-    "podcast_prepare_clip.language": { "type": "string", "title": "Language code (blank = detect)", "default": "en" },
-    "podcast_prepare_clip.pad_seconds": { "type": "number", "title": "Alignment padding around the clip (s)", "default": 2 },
+    "podcast_prepare_clip.language": {
+      "type": "string",
+      "title": "Language code (blank = detect)",
+      "default": "en"
+    },
+    "podcast_prepare_clip.pad_seconds": {
+      "type": "number",
+      "title": "Alignment padding around the clip (s)",
+      "default": 2
+    },
     "podcast_prepare_clip.filler_policy": {
       "type": "string",
       "title": "Filler words (um, uh)",
       "default": "smart",
-      "enum": [["smart", "Smart: cut when the join is natural, mute otherwise"], ["cut", "Hard cut"], ["mute", "Mute in place"], ["keep", "Keep"]]
+      "enum": [
+        [
+          "smart",
+          "Smart: cut when the join is natural, mute otherwise"
+        ],
+        [
+          "cut",
+          "Hard cut"
+        ],
+        [
+          "mute",
+          "Mute in place"
+        ],
+        [
+          "keep",
+          "Keep"
+        ]
+      ]
     },
     "podcast_prepare_clip.silence_policy": {
       "type": "string",
       "title": "Long pauses",
       "default": "tighten",
-      "enum": [["tighten", "Tighten (keep a natural pause)"], ["keep", "Keep as spoken"]]
+      "enum": [
+        [
+          "tighten",
+          "Tighten (keep a natural pause)"
+        ],
+        [
+          "keep",
+          "Keep as spoken"
+        ]
+      ]
     },
     "podcast_prepare_clip.caption_preset": {
       "type": "string",
       "title": "Default caption style",
       "default": "classic",
-      "enum": [["classic", "Classic (coral highlight)"], ["yellow-bold", "Yellow bold"], ["white-outline", "White outline"], ["minimal", "Minimal"], ["off", "No captions"]]
+      "enum": [
+        [
+          "classic",
+          "Classic (coral highlight)"
+        ],
+        [
+          "yellow-bold",
+          "Yellow bold"
+        ],
+        [
+          "white-outline",
+          "White outline"
+        ],
+        [
+          "minimal",
+          "Minimal"
+        ],
+        [
+          "off",
+          "No captions"
+        ]
+      ]
     },
-    "podcast_prepare_clip.level_check": { "type": "boolean", "title": "Refuse cuts across a loudness step", "default": true },
+    "podcast_prepare_clip.level_check": {
+      "type": "boolean",
+      "title": "Refuse cuts across a loudness step",
+      "default": true
+    },
     "podcast_prepare_clip.default": {
       "object": "default",
       "properties": [
@@ -73,9 +158,29 @@
       "hidden": true,
       "type": "string",
       "default": "default",
-      "enum": [["default", "Default"]],
-      "conditional": [{ "value": "default", "properties": ["podcast_prepare_clip.default"] }]
+      "enum": [
+        [
+          "default",
+          "Default"
+        ]
+      ],
+      "conditional": [
+        {
+          "value": "default",
+          "properties": [
+            "podcast_prepare_clip.default"
+          ]
+        }
+      ]
     }
   },
-  "shape": [{ "section": "Pipe", "title": "Podcast Prepare Clip", "properties": ["podcast_prepare_clip.profile"] }]
+  "shape": [
+    {
+      "section": "Pipe",
+      "title": "Podcast Prepare Clip",
+      "properties": [
+        "podcast_prepare_clip.profile"
+      ]
+    }
+  ]
 }

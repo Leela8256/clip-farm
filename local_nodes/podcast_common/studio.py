@@ -102,6 +102,45 @@ def expand_words(rows: list[dict]) -> list[dict]:
     return sorted(words, key=lambda w: w['start_ms'])
 
 
+def correction_index(word_id) -> int | None:
+    """`'w42'` → 42 (the word's position in the episode timeline); anything else → None."""
+    text = str(word_id or '').strip().lower()
+    if not text.startswith('w'):
+        return None
+    try:
+        index = int(text[1:])
+    except (TypeError, ValueError):
+        return None
+    return index if index >= 0 else None
+
+
+def apply_corrections(words: list[dict], corrections) -> tuple[list[dict], int]:
+    """
+    The producer's transcript fixes applied to a COPY of the word list.
+
+    A correction row is `{'word_id': 'w<index>', 'text': 'Kubernetes',
+    'original': 'cabinets'}` — the index is the word's position in
+    `analysis/studio/timeline.json` (immutable after init). Only the DISPLAYED
+    text changes: start/end milliseconds, order and count are untouched, so
+    captions, cuts and audio all stay exactly where they were. Anything
+    unreadable (missing id, wrong shape, out of range, empty text) is ignored.
+    """
+    out = [dict(w) for w in (words or [])]
+    applied = 0
+    for row in corrections if isinstance(corrections, list) else []:
+        if not isinstance(row, dict):
+            continue
+        index = correction_index(row.get('word_id'))
+        if index is None or index >= len(out):
+            continue
+        text = str(row.get('text') or '').strip()
+        if not text or text == out[index].get('word'):
+            continue
+        out[index] = {**out[index], 'word': text, 'corrected': True, 'original': out[index].get('word')}
+        applied += 1
+    return out, applied
+
+
 def token(word: str) -> str:
     m = _TOKEN_RE.findall((word or '').lower())
     return m[0] if m else ''
@@ -459,11 +498,17 @@ def quiet_suggestions(ranges, words: list[dict]) -> list[dict]:
 
 
 def low_confidence_suggestions(ranges, words: list[dict]) -> list[dict]:
+    """
+    "Hard to hear" flags. These are NEVER an edit: the transcriber being unsure
+    does not mean the speech is wrong, and muting it would delete real content.
+    They are offered for review only.
+    """
     out, n = [], 0
     for start, end in ranges:
         n += 1
         said = ' '.join(w['word'] for w in words_between(words, start, end))[:120]
-        out.append(_sug('low_confidence', n, start, end, 'mute', 'tight', text=said, confidence=0.4))
+        out.append(_sug('low_confidence', n, start, end, 'review', 'tight', text=said, confidence=0.4,
+                        review_only=True))
     return out
 
 
@@ -481,22 +526,38 @@ def _dedupe(suggestions: list[dict]) -> list[dict]:
     return sorted(kept, key=lambda s: (s['start_ms'], s['id']))
 
 
+def language_supported(language) -> bool:
+    """Filler and profanity word lists are English-only; an unknown language is assumed English."""
+    text = str(language or '').strip().lower()
+    return not text or text.startswith('en')
+
+
 def build_suggestions(words: list[dict], *, silences=None, quiet=None, low_confidence=None,
-                      sentences=None, duration_ms: int = 0) -> dict:
-    """Every deterministic cleanup the studio can offer, with its cleanup level."""
+                      sentences=None, duration_ms: int = 0, language: str | None = None) -> dict:
+    """
+    Every deterministic cleanup the studio can offer, with its cleanup level.
+
+    Filler and profanity detection reads English word lists, so on a recording
+    the transcriber reported in another language those two kinds are not
+    generated at all and are named in `unsupported` instead — an English filler
+    list would otherwise cut real words out of the wrong language.
+    """
     words = sorted(words or [], key=lambda w: w['start_ms'])
     silences = list(silences or [])
+    english = language_supported(language)
+    unsupported = [] if english else ['filler', 'profanity']
     found = (dead_air_suggestions(words, duration_ms)
              + false_start_suggestions(words)
              + repeat_suggestions(sentences or [])
-             + filler_suggestions(words)
+             + (filler_suggestions(words) if english else [])
              + pause_suggestions(silences)
              + quiet_suggestions(quiet or [], words)
-             + profanity_suggestions(words)
+             + (profanity_suggestions(words) if english else [])
              + low_confidence_suggestions(low_confidence or [], words))
     kept = _dedupe(found)
     modes = {level: [s['id'] for s in kept if LEVELS.index(s['level']) <= i] for i, level in enumerate(LEVELS)}
-    return {'schema_version': SCHEMA_VERSION, 'generated_at': time.time(), 'modes': modes, 'suggestions': kept}
+    return {'schema_version': SCHEMA_VERSION, 'generated_at': time.time(), 'language': language,
+            'unsupported': unsupported, 'modes': modes, 'suggestions': kept}
 
 
 def suggestions_for_level(doc: dict, level: str) -> list[dict]:
@@ -509,8 +570,10 @@ def suggestions_for_level(doc: dict, level: str) -> list[dict]:
 
 def timeline_doc(*, episode_id: str, duration_ms: int, model: str, words: list[dict], silences,
                  quiet=None, low_confidence=None, sentence_count: int = 0, language: str | None = None) -> dict:
+    from local_nodes.podcast_common.align import ALIGN_VERSION
     return {
         'schema_version': SCHEMA_VERSION,
+        'align_version': ALIGN_VERSION,
         'episode_id': episode_id,
         'duration_ms': int(duration_ms),
         'model': model,
@@ -706,7 +769,10 @@ def build_prepared(*, project: str, episode_id: str, source: str, media: dict, e
 
     keep = keep_segments(ops['cuts'], duration_ms, min_keep_ms=MIN_PIECE_MS) if duration_ms else [(0, 0)]
     timeline = timeline_map(keep)
-    groups = caption_groups(words, timeline, edits.get('speaker_map'))
+    # transcript fixes are text-only: the captions (burned in and the SRT/VTT
+    # built from these groups) read the corrected words, the timeline does not
+    caption_words, corrected = apply_corrections(words, edits.get('corrections'))
+    groups = caption_groups(caption_words, timeline, edits.get('speaker_map'))
     chapters, chapter_warnings = map_chapters(edits.get('sections'), timeline, duration_ms)
     warnings += chapter_warnings
     assets, asset_warnings = resolve_assets(edits.get('assets'), asset_exists)
@@ -755,8 +821,151 @@ def build_prepared(*, project: str, episode_id: str, source: str, media: dict, e
         'visual': visual,
         'extra_aspects': [a for a in (edits.get('extra_aspects') or []) if isinstance(a, str)],
         'operations_applied': ops['applied'],
+        'corrections_applied': corrected,
         'range': out_range,
         'quality': str(quality or 'rough'),
         'prepared_at': time.time(),
         'warnings': warnings,
     }
+
+
+# -------------------------------------------------------- the render report
+#
+# Schema 2 of the episode render report. It is the only place a client learns
+# whether the finished file is really at the loudness target, what the file's
+# timeline means (source? whole-episode preview? a window of it?) and which
+# chapters ended up in it. Everything here is measured on the DELIVERABLE, not
+# planned — an unverifiable value is reported as null with a warning, never
+# asserted.
+
+REPORT_SCHEMA = 2
+LOUDNESS_TOLERANCE_LU = 1.0        # integrated may sit this far either side of the target
+TRUE_PEAK_CEILING_DBTP = -1.0      # nothing may peak above this…
+TRUE_PEAK_TOLERANCE_DB = 0.2       # …give or take the measurement's own error
+
+
+def loudness_block(measured: dict | None, target_lufs: float | None, *, mastered: bool = True) -> dict:
+    """
+    The report's `loudness` record: what the finished file measures, next to
+    the target it was mastered to. `loudness_ok` is None (unknown) when the
+    file was not mastered or could not be measured — it is False only when a
+    real measurement is outside tolerance.
+    """
+    measured = measured if isinstance(measured, dict) else None
+    target = float(target_lufs) if target_lufs is not None else None
+    block = {
+        'target_lufs': target,
+        'integrated_lufs': measured.get('integrated_lufs') if measured else None,
+        'true_peak_dbtp': measured.get('true_peak_dbtp') if measured else None,
+        'loudness_range_lu': measured.get('loudness_range_lu') if measured else None,
+        'loudness_ok': None,
+    }
+    if not mastered or measured is None or target is None:
+        return block
+    try:
+        integrated = float(block['integrated_lufs'])
+        peak = float(block['true_peak_dbtp'])
+    except (TypeError, ValueError):
+        return block
+    block['loudness_ok'] = (abs(integrated - target) <= LOUDNESS_TOLERANCE_LU
+                            and peak <= TRUE_PEAK_CEILING_DBTP + TRUE_PEAK_TOLERANCE_DB)
+    return block
+
+
+def loudness_warning(block: dict) -> str | None:
+    """Plain-language line for a finished file that missed the loudness target."""
+    if not isinstance(block, dict) or block.get('loudness_ok') is not False:
+        return None
+    target, integrated = block.get('target_lufs'), block.get('integrated_lufs')
+    peak = block.get('true_peak_dbtp')
+    if integrated is not None and target is not None and abs(float(integrated) - float(target)) > LOUDNESS_TOLERANCE_LU:
+        louder = 'louder' if float(integrated) > float(target) else 'quieter'
+        return (f'The finished sound came out {abs(float(integrated) - float(target)):.1f} LU {louder} '
+                f'than the {float(target):.0f} LUFS target.')
+    return f'The finished sound peaks at {float(peak):.1f} dBTP — above the -1.0 dBTP ceiling.'
+
+
+def build_studio_report(*, mode: str, quality: str, version: int, title, check: dict, measured,
+                        measurements=None, target_lufs=None, mastered: bool = True,
+                        rng=None, preview_output_start_ms: int = 0, total_ms: int, body_ms: int,
+                        lead_ms: int = 0, tail_ms: int = 0, files=None, aspect=None, extras=None,
+                        fps=None, cuts: int = 0, mutes: int = 0, bleeps: int = 0,
+                        captions_on: bool = False, caption_lines: int = 0, chapters=None,
+                        music: bool = False, expect_video: bool = True, parts=None,
+                        spec_hash: str = '', warnings: list[str] | None = None,
+                        seconds: float = 0.0) -> dict:
+    """
+    Report schema 2 for one studio render. `warnings` is appended to in place
+    (the caller keeps the same list), so a duration or loudness problem always
+    reaches the producer as words, not just as a flag.
+    """
+    warnings = warnings if isinstance(warnings, list) else []
+    chapters = [{'title': c.get('title'), 'out_ms': int(c.get('out_ms') or 0)}
+                for c in (chapters or []) if isinstance(c, dict)]
+    duration_ms = int(check.get('duration_ms') or 0)
+    delta = duration_ms - int(total_ms)
+    loudness = loudness_block(measured, target_lufs, mastered=mastered)
+    has_audio, has_video = bool(check.get('has_audio')), bool(check.get('has_video'))
+    clock_mode = 'export' if mode == 'export' else ('range_preview' if rng else 'rough_preview')
+    report = {
+        'schema_version': REPORT_SCHEMA,
+        'kind': 'studio',
+        'mode': mode,
+        'quality': quality,
+        'version': int(version),
+        'title': title,
+        'range': [int(rng[0]), int(rng[1])] if rng else None,
+        'duration_ms': duration_ms,
+        'output_duration_ms': int(total_ms),
+        'body_duration_ms': int(body_ms),
+        'lead_ms': int(lead_ms),
+        'tail_ms': int(tail_ms),
+        'files': files or {},
+        'aspect_ratio': aspect,
+        'extra_aspects': list(extras or []),
+        'width': check.get('width'),
+        'height': check.get('height'),
+        'fps': fps,
+        'has_audio': has_audio,
+        'has_video': has_video,
+        'cuts': int(cuts),
+        'muted': int(mutes),
+        'bleeped': int(bleeps),
+        'captions': bool(captions_on),
+        'caption_lines': int(caption_lines),
+        'chapters': chapters,
+        'chapter_count': len(chapters),
+        'clock': {
+            'mode': clock_mode,
+            'quality': quality,
+            'range': [int(rng[0]), int(rng[1])] if rng else None,
+            'preview_output_start_ms': int(preview_output_start_ms or 0),
+        },
+        'mastered': bool(mastered),
+        'unmastered_preview': bool(mode != 'export' and not mastered),
+        'music': bool(music),
+        'loudness': loudness,
+        'loudness_target_lufs': loudness['target_lufs'] if mastered else None,
+        'measurements': measurements or {},
+        'parts': list(parts or []),
+        'spec_hash': spec_hash,
+        'warnings': warnings,
+        'validation': {
+            'expected_duration_ms': int(total_ms),
+            'duration_ms': duration_ms,
+            'delta_ms': delta,
+            'duration_ok': abs(delta) <= 500,
+            'has_video': has_video,
+            'has_audio': has_audio,
+            'streams_ok': bool(has_audio and (has_video or not expect_video)),
+            'loudness_ok': loudness['loudness_ok'],
+        },
+        'rendered_at': time.time(),
+        'seconds': seconds,
+    }
+    if not report['validation']['duration_ok']:
+        warnings.append(f'The finished file is {delta / 1000:.1f}s off the planned length.')
+    problem = loudness_warning(loudness)
+    if problem:
+        warnings.append(problem)
+    return report

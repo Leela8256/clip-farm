@@ -26,7 +26,7 @@
       "config": {
         "profile": "default",
         "default": {
-          "model": "small",
+          "model": "medium",
           "language": "en",
           "pad_seconds": 2,
           "filler_policy": "smart",
@@ -111,7 +111,7 @@
       }
     }
   ],
-  "project_id": "9cb154f7-c063-47d7-a551-845ea9bbf40b",
+  "project_id": "c88596a6-ada8-450f-bf3d-91e8cf42d31c",
   "viewport": {
     "x": 0,
     "y": 0,

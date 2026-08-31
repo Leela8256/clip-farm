@@ -9,11 +9,13 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { getRun, subscribeRun, type RunState } from "@/lib/engine";
 import type { Sentence, StatusEvent } from "@/lib/podcast";
-import type { EpisodeEdits, Operation, StudioWord, Suggestion } from "@/lib/studio";
+import { fmtDuration, type ApplyAllResult, type EpisodeEdits, type Operation, type StudioWord, type Suggestion } from "@/lib/studio";
 
 export interface EditorWord {
   /** position in the flat word list — the unit of selection */
   i: number;
+  /** place in the recording's own word list (-1 when the line had no word timings) */
+  k: number;
   text: string;
   s: number;
   e: number;
@@ -40,6 +42,7 @@ function spread(text: string, start: number, end: number, from: number): EditorW
   const span = Math.max(1, end - start);
   return parts.map((p, k) => ({
     i: from + k,
+    k: -1,
     text: p,
     s: Math.round(start + (span * k) / parts.length),
     e: Math.round(start + (span * (k + 1)) / parts.length),
@@ -65,7 +68,7 @@ export function buildTranscript(words: StudioWord[], sentences: Sentence[]): Tra
       let q = p;
       while (q < src.length && src[q].s < sentence.end_ms) {
         const w = clean(src[q].w);
-        if (w) picked.push({ i: flat.length + picked.length, text: w, s: src[q].s, e: Math.max(src[q].e, src[q].s + 1) });
+        if (w) picked.push({ i: flat.length + picked.length, k: q, text: w, s: src[q].s, e: Math.max(src[q].e, src[q].s + 1) });
         q++;
       }
       p = q;
@@ -91,12 +94,13 @@ export function buildTranscript(words: StudioWord[], sentences: Sentence[]): Tra
     rows.push({ i: rows.length, start_ms: line[0].s, end_ms: line[line.length - 1].e, text: line.map((w) => w.text).join(" "), words: line });
     line = [];
   };
-  for (const raw of src) {
+  for (let k = 0; k < src.length; k++) {
+    const raw = src[k];
     const text = clean(raw.w);
     if (!text) continue;
     const prev = line[line.length - 1];
     if (prev && (raw.s - prev.e > 700 || line.length >= 22)) flush();
-    line.push({ i: flat.length + line.length, text, s: raw.s, e: Math.max(raw.e, raw.s + 1) });
+    line.push({ i: flat.length + line.length, k, text, s: raw.s, e: Math.max(raw.e, raw.s + 1) });
   }
   flush();
   return { rows, words: flat };
@@ -245,3 +249,25 @@ export function initStep(evt: StatusEvent | null | undefined): number {
   const i = INIT_STEPS.findIndex((s) => s.stages.includes(evt.stage));
   return i < 0 ? 0 : i;
 }
+
+/* ---- plain-language labels for the editing screens ------------------------ */
+
+/** What "apply all" actually did, in a producer's words. */
+export function applySummary(result: ApplyAllResult): string {
+  const bits = [`${result.applied} applied`];
+  if (result.skipped_conflict) bits.push(`${result.skipped_conflict} skipped (they overlap an edit)`);
+  if (result.review_only) bits.push(`${result.review_only} need a listen`);
+  if (result.already_accepted) bits.push(`${result.already_accepted} were already in`);
+  if (result.saved_ms > 1000) bits.push(`${fmtDuration(result.saved_ms)} saved`);
+  return bits.join(" · ");
+}
+
+/** Why a drafted change was suggested, grouped the way a producer thinks about it. */
+export const CATEGORY_LABELS: Record<string, string> = {
+  setup: "Getting started",
+  retake: "Second takes",
+  repetition: "Said twice",
+  pause: "Long pauses",
+  tangent: "Off the point",
+  other: "Other",
+};

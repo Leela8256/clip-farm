@@ -52,16 +52,16 @@
       "id": "transcribe",
       "provider": "audio_transcribe",
       "config": {
-        "profile": "small",
-        "small": {
-          "model": "small",
+        "profile": "medium",
+        "parameters": {},
+        "medium": {
+          "model": "medium",
           "language": "en",
           "silence_threshold": 0.25,
           "min_seconds": 240,
           "max_seconds": 300,
           "vad_level": 1
-        },
-        "parameters": {}
+        }
       },
       "input": [
         {

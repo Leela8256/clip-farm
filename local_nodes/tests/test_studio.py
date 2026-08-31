@@ -168,7 +168,7 @@ class SuggestionTests(unittest.TestCase):
         self.assertEqual(set(modes['tight']), {s['id'] for s in doc['suggestions']})
         for s in doc['suggestions']:
             self.assertIn(s['level'], studio.LEVELS)
-            self.assertIn(s['action'], ('cut', 'mute', 'bleep', 'shorten_silence'))
+            self.assertIn(s['action'], ('cut', 'mute', 'bleep', 'shorten_silence', 'review'))
             self.assertLess(s['start_ms'], s['end_ms'])
 
     def test_every_kind_is_found(self):
@@ -207,6 +207,44 @@ class SuggestionTests(unittest.TestCase):
         spans = [(s['start_ms'], s['end_ms']) for s in first['suggestions']]
         for i, span in enumerate(spans):
             self.assertFalse(studio.overlaps(span, spans[:i]))
+
+    def test_low_confidence_is_review_only_and_never_a_mute(self):
+        """Muting speech the transcriber merely misheard would delete real content."""
+        doc = studio.build_suggestions(self.episode(), silences=[(8000, 11_000)],
+                                       low_confidence=[(23_000, 23_600)], duration_ms=60_000)
+        flagged = [s for s in doc['suggestions'] if s['kind'] == 'low_confidence']
+        self.assertTrue(flagged)
+        for s in flagged:
+            self.assertEqual(s['action'], 'review')
+            self.assertTrue(s['review_only'])
+        self.assertNotIn('mute', [s['action'] for s in flagged])
+        # it stays in the tight set, with the same id shape as before
+        self.assertIn(flagged[0]['id'], doc['modes']['tight'])
+        self.assertEqual(flagged[0]['id'], 'lc01')
+
+    def test_english_is_the_default_and_nothing_is_unsupported(self):
+        for language in (None, '', 'en', 'en-GB', 'english'):
+            doc = studio.build_suggestions(self.episode(), silences=[(8000, 11_000)], duration_ms=60_000,
+                                           language=language)
+            self.assertEqual(doc['unsupported'], [])
+            self.assertEqual(doc['language'], language)
+            kinds = {s['kind'] for s in doc['suggestions']}
+            self.assertIn('filler', kinds)
+            self.assertIn('profanity', kinds)
+
+    def test_another_language_skips_the_english_word_lists(self):
+        doc = studio.build_suggestions(self.episode(), silences=[(8000, 11_000)],
+                                       low_confidence=[(23_000, 23_600)], duration_ms=60_000, language='de')
+        self.assertEqual(doc['unsupported'], ['filler', 'profanity'])
+        self.assertEqual(doc['language'], 'de')
+        kinds = {s['kind'] for s in doc['suggestions']}
+        self.assertNotIn('filler', kinds)
+        self.assertNotIn('profanity', kinds)
+        # everything language-neutral is still offered, and the levels still nest
+        self.assertIn('pause', kinds)
+        self.assertIn('low_confidence', kinds)
+        modes = doc['modes']
+        self.assertTrue(set(modes['natural']) <= set(modes['balanced']) <= set(modes['tight']))
 
     def test_selecting_a_level_returns_the_nested_set(self):
         doc = studio.build_suggestions(self.episode(), silences=[(8000, 11_000)], duration_ms=60_000)
@@ -339,6 +377,164 @@ class PreparedSpecTests(unittest.TestCase):
         self.assertEqual(spec['extra_aspects'], ['1:1'])
 
 
+class CorrectionTests(unittest.TestCase):
+    """Transcript fixes are text, not media: captions change, the clock never does."""
+
+    SPOKEN = words('welcome to the show', start_ms=0) + words('and we are back', start_ms=5000)
+
+    def spec(self, corrections=None):
+        return studio.build_prepared(
+            project='projects/ep12', episode_id='ep12', source='projects/ep12/source/ep.mp4',
+            media={'duration_ms': 10_000, 'has_video': True},
+            edits=edits([{'id': 'e001', 'type': 'cut', 'start_ms': 2000, 'end_ms': 3000, 'enabled': True}],
+                        **({'corrections': corrections} if corrections is not None else {})),
+            words=self.SPOKEN, quality='rough', mode='preview')
+
+    def test_a_corrected_word_reaches_the_caption_groups(self):
+        spec = self.spec([{'word_id': 'w3', 'text': 'Showcase', 'original': 'show'}])
+        text = ' '.join(g['text'] for g in spec['captions']['groups'])
+        self.assertIn('Showcase', text)
+        self.assertNotIn('show ', text + ' ')
+        self.assertEqual(spec['corrections_applied'], 1)
+        # the nested word rows carry it too (SRT/VTT and the burned captions read these)
+        flat = [w['w'] for g in spec['captions']['groups'] for w in g['words']]
+        self.assertIn('Showcase', flat)
+
+    def test_timing_is_untouched_by_a_correction(self):
+        plain = self.spec()
+        fixed = self.spec([{'word_id': 'w3', 'text': 'Showcase'}])
+        for key in ('keep', 'map', 'output_duration_ms', 'cuts', 'mutes', 'bleeps'):
+            self.assertEqual(plain[key], fixed[key])
+        self.assertEqual([(g['start_ms'], g['end_ms'], g['source_ms']) for g in plain['captions']['groups']],
+                         [(g['start_ms'], g['end_ms'], g['source_ms']) for g in fixed['captions']['groups']])
+        self.assertEqual([[(w['s'], w['e']) for w in g['words']] for g in plain['captions']['groups']],
+                         [[(w['s'], w['e']) for w in g['words']] for g in fixed['captions']['groups']])
+
+    def test_unreadable_corrections_are_ignored(self):
+        spec = self.spec([{'word_id': 'w9999', 'text': 'nope'},      # past the end of the timeline
+                          {'word_id': 'banana', 'text': 'nope'},     # not a word id
+                          {'word_id': None, 'text': 'nope'},
+                          {'word_id': 'w-2', 'text': 'nope'},
+                          {'word_id': 'w1', 'text': '   '},          # empty replacement
+                          'not even a dict',
+                          {'word_id': 'w0', 'text': 'Welcome'}])
+        text = ' '.join(g['text'] for g in spec['captions']['groups'])
+        self.assertNotIn('nope', text)
+        self.assertIn('Welcome', text)
+        self.assertEqual(spec['corrections_applied'], 1)
+        self.assertEqual(self.spec('garbage')['corrections_applied'], 0)
+        self.assertEqual(self.spec()['corrections_applied'], 0)
+
+    def test_apply_corrections_never_mutates_the_input(self):
+        original = [dict(w) for w in self.SPOKEN]
+        fixed, applied = studio.apply_corrections(self.SPOKEN, [{'word_id': 'w1', 'text': 'TO'}])
+        self.assertEqual(applied, 1)
+        self.assertEqual(self.SPOKEN, original)
+        self.assertEqual(fixed[1]['word'], 'TO')
+        self.assertEqual(fixed[1]['original'], 'to')
+        self.assertTrue(fixed[1]['corrected'])
+        self.assertEqual([(w['start_ms'], w['end_ms']) for w in fixed],
+                         [(w['start_ms'], w['end_ms']) for w in original])
+
+    def test_word_ids_are_indexes_into_the_timeline(self):
+        self.assertEqual(studio.correction_index('w0'), 0)
+        self.assertEqual(studio.correction_index('W42'), 42)
+        self.assertIsNone(studio.correction_index('42'))
+        self.assertIsNone(studio.correction_index('w'))
+        self.assertIsNone(studio.correction_index(None))
+
+
+class ReportTests(unittest.TestCase):
+    """Report schema 2 — what a client is allowed to believe about a finished file."""
+
+    CHECK = {'duration_ms': 60_000, 'has_audio': True, 'has_video': True, 'width': 1920, 'height': 1080}
+    ON_TARGET = {'integrated_lufs': -16.2, 'true_peak_dbtp': -1.4, 'loudness_range_lu': 7.0}
+
+    def report(self, **over):
+        payload = dict(mode='export', quality='full', version=3, title='Episode 12', check=self.CHECK,
+                       measured=self.ON_TARGET, measurements={'mp4': self.ON_TARGET}, target_lufs=-16,
+                       mastered=True, total_ms=60_000, body_ms=54_000, lead_ms=4_000, tail_ms=2_000,
+                       files={'episode': 'x.mp4'}, aspect='16:9', fps=30,
+                       chapters=[{'title': 'Intro', 'out_ms': 4_000}, {'title': 'Guest', 'out_ms': 20_000}],
+                       warnings=[], seconds=12.0)
+        payload.update(over)
+        return studio.build_studio_report(**payload)
+
+    def test_schema_two_shape(self):
+        report = self.report()
+        self.assertEqual(report['schema_version'], 2)
+        self.assertTrue(report['has_audio'])
+        self.assertTrue(report['has_video'])
+        self.assertEqual([c['title'] for c in report['chapters']], ['Intro', 'Guest'])
+        self.assertEqual(report['chapters'][0], {'title': 'Intro', 'out_ms': 4_000})
+        self.assertEqual(report['chapter_count'], 2)
+        self.assertEqual(report['clock'], {'mode': 'export', 'quality': 'full', 'range': None,
+                                           'preview_output_start_ms': 0})
+        self.assertEqual(sorted(report['loudness']), ['integrated_lufs', 'loudness_ok', 'loudness_range_lu',
+                                                      'target_lufs', 'true_peak_dbtp'])
+        self.assertEqual(report['measurements']['mp4']['integrated_lufs'], -16.2)
+        # the v1 duration fields are still there, next to the new verdict
+        self.assertEqual(report['validation']['expected_duration_ms'], 60_000)
+        self.assertTrue(report['validation']['duration_ok'])
+        self.assertTrue(report['validation']['streams_ok'])
+        self.assertTrue(report['validation']['loudness_ok'])
+        self.assertEqual(report['warnings'], [])
+
+    def test_a_file_inside_tolerance_passes(self):
+        for integrated, peak in ((-16.0, -1.0), (-17.0, -1.1), (-15.0, -0.8)):
+            block = studio.loudness_block({'integrated_lufs': integrated, 'true_peak_dbtp': peak,
+                                           'loudness_range_lu': 6.0}, -16)
+            self.assertTrue(block['loudness_ok'], (integrated, peak))
+
+    def test_out_of_tolerance_fails_with_a_warning(self):
+        loud = self.report(measured={'integrated_lufs': -12.4, 'true_peak_dbtp': -1.2, 'loudness_range_lu': 8.0})
+        self.assertFalse(loud['loudness']['loudness_ok'])
+        self.assertFalse(loud['validation']['loudness_ok'])
+        self.assertTrue(any('louder' in w for w in loud['warnings']))
+
+        peaky = self.report(measured={'integrated_lufs': -16.0, 'true_peak_dbtp': -0.4, 'loudness_range_lu': 8.0})
+        self.assertFalse(peaky['loudness']['loudness_ok'])
+        self.assertTrue(any('dBTP' in w for w in peaky['warnings']))
+
+    def test_an_unmastered_preview_says_so_instead_of_claiming_a_verdict(self):
+        rough = self.report(mode='preview', quality='rough', mastered=False, measurements={},
+                            measured={'integrated_lufs': -23.0, 'true_peak_dbtp': -6.0, 'loudness_range_lu': 9.0})
+        self.assertEqual(rough['clock']['mode'], 'rough_preview')
+        self.assertFalse(rough['mastered'])
+        self.assertTrue(rough['unmastered_preview'])
+        self.assertIsNone(rough['loudness']['loudness_ok'])
+        self.assertIsNone(rough['validation']['loudness_ok'])
+        self.assertIsNone(rough['loudness_target_lufs'])
+        self.assertEqual(rough['loudness']['integrated_lufs'], -23.0)   # measured, just not a verdict
+        self.assertEqual(rough['warnings'], [])
+
+    def test_a_range_preview_records_where_its_clock_starts(self):
+        window = self.report(mode='preview', quality='full', rng=[30_000, 45_000],
+                             preview_output_start_ms=30_000, total_ms=15_000,
+                             check={**self.CHECK, 'duration_ms': 15_000})
+        self.assertEqual(window['clock'], {'mode': 'range_preview', 'quality': 'full', 'range': [30_000, 45_000],
+                                           'preview_output_start_ms': 30_000})
+        self.assertEqual(window['range'], [30_000, 45_000])
+
+    def test_an_unmeasurable_file_is_null_not_a_pass(self):
+        blind = self.report(measured=None, measurements={})
+        self.assertIsNone(blind['loudness']['integrated_lufs'])
+        self.assertIsNone(blind['loudness']['loudness_ok'])
+        self.assertEqual(blind['loudness']['target_lufs'], -16.0)
+
+    def test_a_wrong_length_still_warns(self):
+        off = self.report(check={**self.CHECK, 'duration_ms': 58_000})
+        self.assertFalse(off['validation']['duration_ok'])
+        self.assertEqual(off['validation']['delta_ms'], -2_000)
+        self.assertTrue(any('off the planned length' in w for w in off['warnings']))
+
+    def test_an_audio_only_export_is_not_missing_a_video_stream(self):
+        audio = self.report(check={**self.CHECK, 'has_video': False, 'width': None, 'height': None},
+                            expect_video=False, measurements={'mp3': self.ON_TARGET})
+        self.assertFalse(audio['has_video'])
+        self.assertTrue(audio['validation']['streams_ok'])
+
+
 class DocumentTests(unittest.TestCase):
     def test_timeline_document(self):
         doc = studio.timeline_doc(episode_id='ep12', duration_ms=10_000, model='small',
@@ -358,3 +554,32 @@ class DocumentTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class WordSanitizerTest(unittest.TestCase):
+    def test_smeared_low_confidence_words_are_dropped_and_durations_capped(self):
+        """Whisper stretched 'of' across 8 s of the Joe Berger opening at p=0.013 —
+        captions ran seconds ahead of the audio. Long+unconfident → dropped; long
+        but confident → start pulled to end-1500; no overlaps afterwards."""
+        from local_nodes.podcast_common.align import sanitize_words
+        words = [
+            {'word': 't', 'start_ms': 0, 'end_ms': 840, 'probability': 0.9},
+            {'word': 'of', 'start_ms': 840, 'end_ms': 9200, 'probability': 0.013},   # hallucination smear
+            {'word': 'and', 'start_ms': 9200, 'end_ms': 13600, 'probability': 0.056},
+            {'word': 'stretch', 'start_ms': 13600, 'end_ms': 18300, 'probability': 0.9},  # confident but too long
+            {'word': 'but', 'start_ms': 18520, 'end_ms': 18640, 'probability': 0.77},
+            {'word': 'bad', 'start_ms': 100, 'end_ms': 100, 'probability': 0.9},     # zero-length
+        ]
+        out = sanitize_words(words)
+        texts = [w['word'] for w in out]
+        self.assertEqual(texts, ['t', 'stretch', 'but'])
+        stretch = out[1]
+        self.assertEqual(stretch['end_ms'] - stretch['start_ms'], 1500)              # capped from the end
+        for a, b in zip(out, out[1:]):
+            self.assertLessEqual(a['end_ms'], b['start_ms'])                          # no overlap
+
+    def test_good_words_pass_untouched(self):
+        from local_nodes.podcast_common.align import sanitize_words
+        words = [{'word': 'hi', 'start_ms': 0, 'end_ms': 300, 'probability': 0.95},
+                 {'word': 'there', 'start_ms': 320, 'end_ms': 700, 'probability': 0.9}]
+        self.assertEqual(sanitize_words(words), words)

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type SyntheticEvent } from "react";
 import { Scissors, Sparkles } from "lucide-react";
-import { fmtPosition, nextKeepEdge, type EpisodeEdits } from "@/lib/studio";
+import { fmtPosition, mediaToSource, nextKeepEdge, sourceToMedia, type EpisodeEdits, type PlaybackClock } from "@/lib/studio";
 
 const CORNERS: Record<string, string> = {
   tl: "left-[4%] top-[5%]",
@@ -17,12 +17,20 @@ const CAPTION_POSITION: Record<string, string> = {
   top: "top-[7%]",
 };
 
+export interface AuditionRequest {
+  start_ms: number;
+  end_ms: number;
+  at: number;
+}
+
 /**
  * The picture. Two ways to watch the episode:
  *   • the original recording with the removed parts skipped over — instant, always available
  *   • the finished-looking preview once one has been made for these changes
- * The logo and caption style are drawn on top as a rough stand-in so branding is
- * visible before anything is made.
+ *
+ * The rest of the screen always talks in recording time; only this component
+ * knows where that lands in whichever file is playing, so a word clicked in the
+ * text finds the same moment in a made preview and back again.
  */
 export default function StudioCanvas({
   sourceUrl,
@@ -34,6 +42,10 @@ export default function StudioCanvas({
   logoUrl,
   currentMs,
   seekRequest,
+  auditionRequest,
+  sourceClock,
+  previewClock,
+  approximate,
   onTime,
 }: {
   sourceUrl: string | null;
@@ -43,17 +55,37 @@ export default function StudioCanvas({
   edits: EpisodeEdits;
   caption: string;
   logoUrl: string | null;
+  /** where we are on the recording */
   currentMs: number;
+  /** a place on the recording to jump to */
   seekRequest: { ms: number; at: number } | null;
+  /** listen to one stretch with a run-up and a run-out, then stop */
+  auditionRequest: AuditionRequest | null;
+  sourceClock: PlaybackClock;
+  previewClock: PlaybackClock;
+  /** true while the positions are worked out here rather than read from a made version */
+  approximate: boolean;
   onTime: (ms: number) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [showPreview, setShowPreview] = useState(false);
   const lastSeek = useRef(0);
+  const lastAudition = useRef(0);
+  const auditionUntil = useRef<number | null>(null);
+  const auditionFrom = useRef<number | null>(null);
   const skipping = useRef(false);
 
   const watchingPreview = showPreview && previewFresh && !!previewUrl;
   const src = watchingPreview ? previewUrl : sourceUrl;
+  const clock = watchingPreview ? previewClock : sourceClock;
+
+  /** Where a moment on the recording sits in the file that is playing. */
+  const toMedia = (sourceMs: number) => {
+    const direct = sourceToMedia(clock, sourceMs);
+    if (direct != null) return Math.max(0, direct);
+    // inside something that was taken out — land on the next thing that was kept
+    return Math.max(0, sourceToMedia(clock, nextKeepEdge(edits, sourceMs)) ?? 0);
+  };
 
   // a fresh preview is worth watching, but never yank the picture away mid-play
   useEffect(() => {
@@ -65,20 +97,42 @@ export default function StudioCanvas({
   useEffect(() => {
     if (!seekRequest || seekRequest.at === lastSeek.current) return;
     lastSeek.current = seekRequest.at;
+    auditionUntil.current = null;
     const v = videoRef.current;
-    if (!v || watchingPreview) return;
-    v.currentTime = seekRequest.ms / 1000;
+    if (!v) return;
+    v.currentTime = toMedia(seekRequest.ms) / 1000;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seekRequest, watchingPreview]);
+
+  // listen to one stretch on the recording: two seconds before, through, two after
+  useEffect(() => {
+    if (!auditionRequest || auditionRequest.at === lastAudition.current) return;
+    lastAudition.current = auditionRequest.at;
+    const timer = setTimeout(() => {
+      auditionUntil.current = auditionRequest.end_ms + 2000;
+      auditionFrom.current = Math.max(0, auditionRequest.start_ms - 2000);
+      // always on the recording: it is there straight away and holds every word
+      setShowPreview(false);
+      const v = videoRef.current;
+      if (!v || watchingPreview) return; // a swap of picture picks it up in onLoadedMetadata
+      v.currentTime = auditionFrom.current / 1000;
+      auditionFrom.current = null;
+      void v.play().catch(() => {});
+    }, 0);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auditionRequest]);
 
   const handleTime = (e: SyntheticEvent<HTMLVideoElement>) => {
     const v = e.currentTarget;
-    const ms = Math.round(v.currentTime * 1000);
+    const media = Math.round(v.currentTime * 1000);
+    const source = Math.round(mediaToSource(clock, media));
     if (!watchingPreview) {
-      const edge = nextKeepEdge(edits, ms);
-      if (edge > ms + 30 && !v.paused) {
+      const edge = nextKeepEdge(edits, source);
+      if (edge > source + 30 && !v.paused) {
         if (!skipping.current) {
           skipping.current = true;
-          v.currentTime = edge / 1000;
+          v.currentTime = toMedia(edge) / 1000;
           setTimeout(() => {
             skipping.current = false;
           }, 60);
@@ -86,7 +140,23 @@ export default function StudioCanvas({
         return;
       }
     }
-    onTime(ms);
+    if (auditionUntil.current != null && source >= auditionUntil.current) {
+      auditionUntil.current = null;
+      v.pause();
+    }
+    onTime(source);
+  };
+
+  // keep the place when the picture swaps between the recording and a made preview
+  const handleLoaded = (e: SyntheticEvent<HTMLVideoElement>) => {
+    const v = e.currentTarget;
+    if (auditionFrom.current != null) {
+      v.currentTime = auditionFrom.current / 1000;
+      auditionFrom.current = null;
+      void v.play().catch(() => {});
+      return;
+    }
+    if (currentMs > 0) v.currentTime = toMedia(currentMs) / 1000;
   };
 
   const style = edits.visual?.caption_style;
@@ -105,6 +175,7 @@ export default function StudioCanvas({
             preload="metadata"
             src={src}
             onTimeUpdate={handleTime}
+            onLoadedMetadata={handleLoaded}
             className="h-full w-full object-contain"
           />
         ) : (
@@ -154,6 +225,7 @@ export default function StudioCanvas({
           {fmtPosition(currentMs)}
           <span className="ml-2 text-[11px] normal-case tracking-normal text-ink-faint">
             {watchingPreview ? "finished look" : "removed parts are skipped as it plays"}
+            {approximate ? " · positions are close until a preview is made" : ""}
           </span>
         </p>
         {previewUrl ? (

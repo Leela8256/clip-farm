@@ -234,6 +234,44 @@ def render_audio(src_wav: str | Path, segments_ms: list[tuple[int, int]], out_wa
     return out_wav
 
 
+def loudnorm_filter(target_lufs: float = LOUDNESS_TARGET_LUFS, stats: dict | None = None) -> str:
+    """
+    The loudnorm filter string. Without `stats` it is the measurement (first)
+    pass; with the first pass's JSON it is the linear second pass that actually
+    lands on the target.
+    """
+    base = f'loudnorm=I={float(target_lufs)}:TP={TRUE_PEAK_DBTP}:LRA={LOUDNESS_RANGE_LU}'
+    if not stats:
+        return base
+    try:
+        return (f'{base}:measured_I={stats["input_i"]}:measured_TP={stats["input_tp"]}'
+                f':measured_LRA={stats["input_lra"]}:measured_thresh={stats["input_thresh"]}'
+                f':offset={stats["target_offset"]}:linear=true')
+    except KeyError:
+        return base
+
+
+def master_wav(src_wav: str | Path, out_wav: str | Path, *, loudness_lufs: float = LOUDNESS_TARGET_LUFS,
+               channels: int = 2) -> Path:
+    """
+    Two-pass EBU R128 mastering of a COMPLETE programme (intro, cards, body,
+    outro — everything already joined). Nothing may be added to the audio after
+    this or the finished file misses the target.
+    """
+    src_wav, out_wav = Path(src_wav), Path(out_wav)
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    base = loudnorm_filter(loudness_lufs)
+    measure = subprocess.run(
+        [ffmpeg_exe(), '-hide_banner', '-nostdin', '-i', str(src_wav), '-vn',
+         '-af', f'{base}:print_format=json', '-f', 'null', '-'],
+        capture_output=True, text=True,
+    )
+    second = loudnorm_filter(loudness_lufs, _loudnorm_stats(measure.stderr))
+    run_ffmpeg(['-y', '-i', str(src_wav), '-vn', '-af', f'{second},aresample=48000',
+                '-ar', '48000', '-ac', str(int(channels)), '-c:a', 'pcm_s16le', str(out_wav)])
+    return out_wav
+
+
 def measure_loudness(path: str | Path) -> dict | None:
     """Integrated loudness / true peak of a finished file (EBU R128, via loudnorm's analysis pass)."""
     result = subprocess.run(

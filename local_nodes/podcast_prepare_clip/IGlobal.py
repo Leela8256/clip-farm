@@ -5,7 +5,7 @@ from rocketlib import IGlobalBase
 from local_nodes.podcast_common.config import load_node_config
 
 DEFAULTS = {
-    'model': 'small',
+    'model': 'medium',
     'language': 'en',
     'pad_seconds': 2,
     'filler_policy': 'smart',

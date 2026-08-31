@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Flag, RotateCcw, Scissors, Search, UserRound, VolumeX, Volume2 } from "lucide-react";
-import { fmtPosition, type EditOperation, type EpisodeEdits } from "@/lib/studio";
+import { fmtPosition, wordId, type Correction, type EditOperation, type EpisodeEdits } from "@/lib/studio";
 import { rowAt, type EditorRow, type EditorWord, type Marks } from "./helpers";
 
 const OVERSCAN = 900;
@@ -35,6 +35,10 @@ export default function TranscriptEditor({
   onRenameSpeaker,
   onAddSection,
   onSelection,
+  syncSelection,
+  corrections,
+  onCorrect,
+  onRevertCorrection,
 }: {
   rows: EditorRow[];
   words: EditorWord[];
@@ -48,6 +52,12 @@ export default function TranscriptEditor({
   onRenameSpeaker: (id: string, name: string) => void;
   onAddSection: (ms: number, hint: string) => void;
   onSelection: (range: Range | null) => void;
+  /** a stretch picked somewhere else (the sound bar) — the words select with it */
+  syncSelection: Range | null;
+  /** words whose spelling the producer fixed, by word id */
+  corrections: Map<string, Correction>;
+  onCorrect: (wordId: string, text: string, original: string) => void;
+  onRevertCorrection: (wordId: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -62,6 +72,8 @@ export default function TranscriptEditor({
   const [follow, setFollow] = useState(true);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [fixing, setFixing] = useState<{ i: number; word_id: string; original: string } | null>(null);
+  const [fixDraft, setFixDraft] = useState("");
 
   /* ---- geometry (windowed rendering keeps thousands of lines smooth) ---- */
 
@@ -173,6 +185,29 @@ export default function TranscriptEditor({
     return () => clearTimeout(timer);
   }, [selectionKey, onSelection]);
 
+  // a stretch picked on the sound bar selects the same words here
+  const syncKey = syncSelection ? `${syncSelection.start_ms}:${syncSelection.end_ms}` : "";
+  useEffect(() => {
+    if (!syncKey) {
+      const clearTimer = setTimeout(() => {
+        setAnchor(null);
+        setHead(null);
+      }, 0);
+      return () => clearTimeout(clearTimer);
+    }
+    if (!words.length || dragging.current) return;
+    const [a, b] = syncKey.split(":").map(Number);
+    let lo = words.findIndex((w) => w.e > a);
+    if (lo < 0) lo = words.length - 1;
+    let hi = lo;
+    while (hi + 1 < words.length && words[hi + 1].s < b) hi++;
+    const timer = setTimeout(() => {
+      setAnchor(lo);
+      setHead(hi);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [syncKey, words]);
+
   useEffect(() => {
     const up = () => {
       dragging.current = false;
@@ -273,7 +308,37 @@ export default function TranscriptEditor({
   const speakerIds = Object.keys(speakers);
   const q = query.trim().toLowerCase();
 
+  const startFix = (w: EditorWord) => {
+    if (w.k < 0) return;
+    const id = wordId(w.k);
+    const held = corrections.get(id);
+    setFixing({ i: w.i, word_id: id, original: held?.original || w.text });
+    setFixDraft(held?.text ?? w.text);
+  };
+
   const word = (w: EditorWord) => {
+    const id = w.k >= 0 ? wordId(w.k) : "";
+    const fixed = id ? corrections.get(id) : undefined;
+    if (fixing && fixing.i === w.i)
+      return (
+        <input
+          key={w.i}
+          autoFocus
+          value={fixDraft}
+          onChange={(e) => setFixDraft(e.target.value)}
+          onBlur={() => setFixing(null)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              onCorrect(fixing.word_id, fixDraft, fixing.original);
+              setFixing(null);
+            }
+            if (e.key === "Escape") setFixing(null);
+          }}
+          aria-label="Fix this word"
+          className="rr-input rr-input-sm mx-0.5 inline-block w-32 align-baseline"
+        />
+      );
     const mark = marks.byWord.get(w.i);
     const inSelection = anchor != null && head != null && w.i >= Math.min(anchor, head) && w.i <= Math.max(anchor, head);
     const playing = currentMs >= w.s && currentMs < w.e;
@@ -285,18 +350,34 @@ export default function TranscriptEditor({
       mark?.bleep ? "underline decoration-[#7C3AED] decoration-2 underline-offset-2" : "",
       inSelection ? "bg-accent/25" : hit ? "bg-processing/25" : "",
       playing ? "bg-ink text-ink-inverse" : "",
+      fixed ? "border-b border-dotted border-accent" : "",
     ].join(" ");
     return (
-      <span
-        key={w.i}
-        data-i={w.i}
-        onMouseDown={(e) => startAt(w.i, e.shiftKey)}
-        onMouseEnter={() => extendTo(w.i)}
-        onMouseUp={() => releaseAt(w)}
-        title={fmtPosition(w.s)}
-        className={classes}
-      >
-        {w.text}{" "}
+      <span key={w.i}>
+        <span
+          data-i={w.i}
+          onMouseDown={(e) => startAt(w.i, e.shiftKey)}
+          onMouseEnter={() => extendTo(w.i)}
+          onMouseUp={() => releaseAt(w)}
+          onDoubleClick={(e) => {
+            e.preventDefault();
+            startFix(w);
+          }}
+          title={fixed ? `Heard as “${fixed.original}” · double-click to change it` : `${fmtPosition(w.s)} · double-click to fix the word`}
+          className={classes}
+        >
+          {fixed ? fixed.text : w.text}
+        </span>
+        {fixed ? (
+          <button
+            type="button"
+            onClick={() => onRevertCorrection(fixed.word_id)}
+            title={`Put “${fixed.original}” back`}
+            className="ml-0.5 align-middle text-ink-faint hover:text-accent"
+          >
+            <RotateCcw className="inline h-2.5 w-2.5" />
+          </button>
+        ) : null}{" "}
       </span>
     );
   };
@@ -465,7 +546,7 @@ export default function TranscriptEditor({
       </div>
 
       <footer className="flex flex-wrap items-center gap-3 border-t border-line px-3 py-1.5 text-[11px] text-ink-faint">
-        <span>Drag across words to select · shift-click to extend</span>
+        <span>Drag across words to select · shift-click to extend · double-click a word to fix how it reads</span>
         <span className="ml-auto flex items-center gap-1">
           <span className="rr-kbd">Delete</span> remove
           <span className="rr-kbd ml-1">M</span> silence

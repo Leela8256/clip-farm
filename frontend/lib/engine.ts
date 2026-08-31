@@ -242,6 +242,30 @@ export async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
+/** A read that says WHY it came back empty. */
+export type StrictRead<T> = { ok: true; value: T } | { ok: false; missing: boolean; error: string };
+
+/**
+ * Read a file without pretending a broken connection is an empty account.
+ * `readJsonOr` cannot tell the two apart, and a caller that starts a fresh
+ * record on a transport error would write over real work. Here a failed read
+ * is checked against the file listing: gone means gone, anything else is a
+ * problem the screen must report and offer to retry.
+ */
+export async function readJsonStrict<T = unknown>(path: string): Promise<StrictRead<T>> {
+  try {
+    const value = await readJson<T>(path);
+    if (value == null) return { ok: false, missing: true, error: "" };
+    return { ok: true, value };
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    // A dropped socket can make everything look absent, so it is never "missing".
+    if (isConnectionError(error) || error === CONNECTION_LOST_MESSAGE) return { ok: false, missing: false, error };
+    const present = await exists(path);
+    return { ok: false, missing: !present, error };
+  }
+}
+
 export async function writeJson(path: string, value: unknown): Promise<void> {
   await withClient((c) => c.fsWriteJson(path, value));
 }

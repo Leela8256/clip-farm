@@ -7,6 +7,7 @@ import {
   SUGGESTION_MODES,
   fmtDuration,
   type AudioSettings,
+  type EditsVersion,
   type CaptionStyle,
   type EpisodeEdits,
   type StudioReport,
@@ -69,6 +70,7 @@ function Toggle({ label, on, onChange, hint }: { label: string; on: boolean; onC
 export default function Inspector({
   edits,
   suggestionCount,
+  applySummary,
   dirty,
   saving,
   busy,
@@ -82,6 +84,7 @@ export default function Inspector({
   onMode,
   onApplyAll,
   onSaveVersion,
+  onOpenVersion,
   onUpload,
   onRemoveAsset,
   onRun,
@@ -89,6 +92,8 @@ export default function Inspector({
 }: {
   edits: EpisodeEdits;
   suggestionCount: number;
+  /** what the last "apply all" actually did */
+  applySummary: string;
   dirty: boolean;
   saving: boolean;
   busy: JobKind | null;
@@ -102,6 +107,7 @@ export default function Inspector({
   onMode: (mode: SuggestionMode) => void;
   onApplyAll: () => void;
   onSaveVersion: (note: string) => void;
+  onOpenVersion: (version: EditsVersion) => void;
   onUpload: (kind: "intro" | "outro" | "music" | "logo", file: File) => void;
   onRemoveAsset: (kind: "intro" | "outro" | "music" | "logo") => void;
   onRun: (kind: JobKind) => void;
@@ -141,6 +147,7 @@ export default function Inspector({
         <button type="button" className="rr-btn rr-btn-sm w-full" onClick={onApplyAll} disabled={!suggestionCount}>
           <Sparkles className="h-3.5 w-3.5" /> Apply all {suggestionCount} suggestions
         </button>
+        {applySummary ? <p className="text-[11px] text-ink-dim">{applySummary}</p> : null}
       </Section>
 
       <Section title="Audio finishing">
@@ -348,14 +355,21 @@ export default function Inspector({
         {edits.versions?.length ? (
           <div className="flex flex-wrap gap-1.5">
             {edits.versions.map((v) => (
-              <span key={v.n} className="rr-chip cursor-default" title={`${v.note ?? "Saved"} · ${new Date((v.created ?? 0) * 1000).toLocaleString()}`}>
+              <button
+                key={v.n}
+                type="button"
+                className="rr-chip"
+                onClick={() => onOpenVersion(v)}
+                title={`${v.note || "Saved"} · ${new Date((v.created ?? 0) * 1000).toLocaleString()} — open it`}
+              >
                 v{v.n}
-              </span>
+              </button>
             ))}
           </div>
         ) : (
           <p className="text-[11px] text-ink-faint">Your work is kept as you go. Save a version to mark a point you can come back to.</p>
         )}
+        {edits.versions?.length ? <p className="text-[11px] text-ink-faint">Open a save point to see what it holds, or to go back to it.</p> : null}
       </Section>
 
       <Section title="Preview & export" open>

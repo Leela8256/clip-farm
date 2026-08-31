@@ -3,9 +3,10 @@ Episode renderer tests — the studio half of podcast_render.
 
 Everything here is plan-level: the ffmpeg graph strings, the resumable part
 split, the spec hash, the output->source range mapping, the ffmetadata
-chapters and the caption restyling. No engine, no store. One optional smoke
-test really runs ffmpeg on a six second synthetic clip; it skips when no
-ffmpeg binary is reachable.
+chapters and the caption restyling. No engine, no store. Two optional smoke
+tests really run ffmpeg on short synthetic material (a rendered cut, and the
+mastering of a complete programme with a deliberately loud intro); they skip
+when no ffmpeg binary is reachable.
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from local_nodes.podcast_common.media import (  # noqa: E402
     BLEEP_DB,
     EPISODE_PART_MS,
+    LOUDNESS_TARGET_LUFS,
+    TRUE_PEAK_DBTP,
     aspect_dims,
     capped_dims,
     caption_layout_for,
@@ -32,6 +35,7 @@ from local_nodes.podcast_common.media import (  # noqa: E402
     episode_part_graph,
     ffmetadata_chapters,
     ffmpeg_exe,
+    loudnorm_filter,
     parse_aspect,
     plan_episode_parts,
     range_to_keep,
@@ -117,6 +121,41 @@ class EpisodeAudioGraphTest(unittest.TestCase):
     def test_empty_keep_is_refused(self):
         with self.assertRaises(ValueError):
             episode_audio_graph([])
+
+
+class MasteringGraphTest(unittest.TestCase):
+    """The loudness pass belongs on the finished programme, not on the body."""
+
+    STATS = {'input_i': '-23.4', 'input_tp': '-4.1', 'input_lra': '6.2', 'input_thresh': '-33.9',
+             'target_offset': '0.3'}
+
+    def test_the_body_pass_never_masters_on_its_own(self):
+        """episode_audio_graph ends at [pre] — no loudnorm anywhere inside it."""
+        graph = episode_audio_graph(KEEP, mutes=[(2_000, 2_500)], music={'gain_db': -22})
+        self.assertNotIn('loudnorm', graph)
+        self.assertTrue(graph.endswith('[pre]'))
+
+    def test_the_first_pass_only_measures(self):
+        first = loudnorm_filter(-16)
+        self.assertEqual(first, f'loudnorm=I=-16.0:TP={TRUE_PEAK_DBTP}:LRA=11.0')
+        self.assertNotIn('measured_I', first)
+        self.assertEqual(loudnorm_filter(), f'loudnorm=I={LOUDNESS_TARGET_LUFS}:TP={TRUE_PEAK_DBTP}:LRA=11.0')
+
+    def test_the_second_pass_carries_the_measurement_and_goes_linear(self):
+        second = loudnorm_filter(-16, self.STATS)
+        self.assertIn('measured_I=-23.4', second)
+        self.assertIn('measured_TP=-4.1', second)
+        self.assertIn('measured_LRA=6.2', second)
+        self.assertIn('measured_thresh=-33.9', second)
+        self.assertIn('offset=0.3', second)
+        self.assertTrue(second.endswith(':linear=true'))
+
+    def test_an_incomplete_measurement_falls_back_to_the_plain_filter(self):
+        self.assertEqual(loudnorm_filter(-16, {'input_i': '-20'}), loudnorm_filter(-16))
+        self.assertEqual(loudnorm_filter(-16, None), loudnorm_filter(-16))
+
+    def test_a_target_from_the_edit_file_reaches_the_filter(self):
+        self.assertIn('I=-14.0', loudnorm_filter(-14))
 
 
 class EpisodePartsTest(unittest.TestCase):
@@ -386,6 +425,57 @@ class EpisodeSmokeTest(unittest.TestCase):
             joined = concat_parts([part], work / 'video.mp4', work)
             final = mux_episode(joined, audio, work / 'episode.mp4')
             self.assertAlmostEqual(self._duration_ms(final), 5_000, delta=400)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def test_a_loud_intro_cannot_push_the_finished_file_off_target(self):
+        """
+        The defect this guards: mastering the body alone and bolting the intro
+        and outro on afterwards. Here the added clips are 25 dB louder than the
+        episode body, so a body-only master would leave the finished mp4 far
+        above -16 LUFS. Mastering the assembled programme lands it anyway.
+        """
+        from local_nodes.podcast_common.media import (
+            assemble_episode_audio, master_wav, measure_loudness, mux_episode,
+        )
+
+        work = Path(tempfile.mkdtemp(prefix='studio_master_'))
+        try:
+            def tone(name: str, seconds: float, hz: int, volume: str) -> Path:
+                path = work / name
+                subprocess.run(
+                    [ffmpeg_exe(), '-hide_banner', '-nostdin', '-y', '-f', 'lavfi', '-i',
+                     f'sine=frequency={hz}:sample_rate=48000:duration={seconds}',
+                     '-af', f'volume={volume}', '-ac', '2', '-c:a', 'pcm_s16le', str(path)],
+                    check=True, capture_output=True, text=True)
+                return path
+
+            # ffmpeg's sine generator sits near -22 LUFS, so the levels are set
+            # from there: the stings land around -4 LUFS, the body around -29
+            intro = tone('intro.wav', 3, 440, '18dB')         # a brand sting at full level
+            body = tone('body.wav', 6, 220, '-7dB')           # the quiet episode itself
+            outro = tone('outro.wav', 3, 660, '18dB')
+            programme = assemble_episode_audio(
+                [{'path': str(intro)}, {'silence_ms': 1_000}, {'path': str(body)},
+                 {'silence_ms': 1_000}, {'path': str(outro)}],
+                work / 'programme.wav')
+
+            raw = measure_loudness(programme)
+            self.assertIsNotNone(raw)
+            self.assertGreater(raw['integrated_lufs'], LOUDNESS_TARGET_LUFS + 1.0)   # the problem is real
+
+            mastered = master_wav(programme, work / 'mastered.wav', loudness_lufs=LOUDNESS_TARGET_LUFS)
+            picture = work / 'picture.mp4'
+            subprocess.run(
+                [ffmpeg_exe(), '-hide_banner', '-nostdin', '-y', '-f', 'lavfi', '-i',
+                 'testsrc2=size=320x180:rate=15:duration=14', '-c:v', 'libx264', '-preset', 'ultrafast',
+                 '-pix_fmt', 'yuv420p', str(picture)], check=True, capture_output=True, text=True)
+            final = mux_episode(picture, mastered, work / 'episode.mp4')
+
+            measured = measure_loudness(final)
+            self.assertIsNotNone(measured)
+            self.assertAlmostEqual(measured['integrated_lufs'], LOUDNESS_TARGET_LUFS, delta=1.0)
+            self.assertLessEqual(measured['true_peak_dbtp'], TRUE_PEAK_DBTP + 0.2)
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
