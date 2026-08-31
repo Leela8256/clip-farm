@@ -1,0 +1,122 @@
+{
+  "components": [
+    {
+      "id": "chat_source",
+      "provider": "chat",
+      "config": {
+        "hideForm": true,
+        "mode": "Source",
+        "parameters": {},
+        "type": "chat"
+      },
+      "ui": {
+        "position": {
+          "x": 20,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    },
+    {
+      "id": "prepare",
+      "provider": "podcast_prepare_clip",
+      "config": {
+        "profile": "default",
+        "default": {
+          "model": "small",
+          "language": "en",
+          "pad_seconds": 2,
+          "filler_policy": "smart",
+          "silence_policy": "tighten",
+          "caption_preset": "classic",
+          "level_check": true
+        },
+        "parameters": {}
+      },
+      "input": [
+        {
+          "lane": "questions",
+          "from": "chat_source"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 240,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    },
+    {
+      "id": "render",
+      "provider": "podcast_render",
+      "config": {
+        "profile": "export",
+        "export": {
+          "mode": "export",
+          "size": 1920,
+          "layouts": "vertical,wide",
+          "fps": 30,
+          "crf": 20,
+          "preset": "veryfast",
+          "captions": true,
+          "sidecars": true
+        },
+        "parameters": {}
+      },
+      "input": [
+        {
+          "lane": "text",
+          "from": "prepare"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 1120,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    },
+    {
+      "id": "response",
+      "provider": "response_answers",
+      "config": {
+        "laneName": "answers"
+      },
+      "input": [
+        {
+          "lane": "answers",
+          "from": "render"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 1340,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
+    }
+  ],
+  "project_id": "9cb154f7-c063-47d7-a551-845ea9bbf40b",
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "version": 1,
+  "name": "podcast-studio-export"
+}

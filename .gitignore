@@ -37,3 +37,6 @@ tmp/
 # Claude Code
 .claude/scheduled_tasks.lock
 frontend/tsconfig.tsbuildinfo
+!.rocketride/podcast-studio-prepare.pipe
+!.rocketride/podcast-studio-preview.pipe
+!.rocketride/podcast-studio-export.pipe

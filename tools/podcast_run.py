@@ -47,6 +47,9 @@ PIPES = {
     "index": str(REPO / ".rocketride" / "transcript-index.pipe"),
     "search": str(REPO / ".rocketride" / "transcript-search.pipe"),
     "visual": str(REPO / ".rocketride" / "visual-scan.pipe"),
+    "studio-prepare": str(REPO / ".rocketride" / "podcast-studio-prepare.pipe"),
+    "studio-preview": str(REPO / ".rocketride" / "podcast-studio-preview.pipe"),
+    "studio-export": str(REPO / ".rocketride" / "podcast-studio-export.pipe"),
 }
 URI = os.environ.get("ROCKETRIDE_URI", "http://127.0.0.1:5567")
 KEY = os.environ.get("ROCKETRIDE_APIKEY", "MYAPIKEY")
@@ -335,6 +338,17 @@ async def main():
             lines += extra
             answer = manifest_of(await run_chat(client, PIPES[cmd], lines, f"{cmd} {clip}"))
             print(json.dumps(answer, default=str, indent=1)[:2500])
+
+        elif cmd == "studio":
+            # studio <episode> init|preview|export [range:a-b] [quality:rough|full] [key:value ...]
+            episode, action = sys.argv[2], sys.argv[3]
+            lines = [f"project: projects/{episode}", f"studio: {action if action != 'preview' else 'preview'}"]
+            if action == "init":
+                lines[1] = "studio: init"
+            lines += [a for a in sys.argv[4:] if ":" in a]
+            pipe = {"init": "studio-prepare", "preview": "studio-preview", "export": "studio-export"}[action]
+            answer = manifest_of(await run_chat(client, PIPES[pipe], lines, f"studio {action}"))
+            print(json.dumps(answer, default=str, indent=1)[:3000])
 
         elif cmd == "status":
             episode = sys.argv[2]

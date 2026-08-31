@@ -227,3 +227,44 @@ faces, tracking, talking cue, layout planning, crop paths, face-safe checks, epi
 Speaker diarization (real `speaker_match`, identity-linked active speaker), brand kits / batch
 exports / compilations (phase 3), full-episode transcript editing (phase 4), content packs and
 cross-episode search (phase 5).
+
+## Podcast Editing Studio (full-episode editor)
+
+Upload raw footage → edit the whole episode by its transcript → polish → preview → export. Clip discovery is
+untouched; the studio generalizes the same two custom nodes.
+
+Pipelines (context keys via `parse_context`: `studio: init|preview|export`, `range: a-b` in output ms,
+`quality: rough|full`):
+
+    podcast-studio-prepare.pipe   chat → podcast_prepare_clip → response_answers
+    podcast-studio-preview.pipe   chat → podcast_prepare_clip → podcast_render → response_answers
+    podcast-studio-export.pipe    chat → podcast_prepare_clip → podcast_render → response_answers
+
+Files (all times integer ms on the source timeline; the recording is never modified):
+
+    edits/episode-edits.json            browser-owned instructions: ops (cut / mute / bleep / shorten_silence,
+                                        `enabled` = restore), speakers, sections, assets, audio/visual settings
+    edits/versions/NNN.json             full snapshots (Save version)
+    analysis/studio/timeline.json       full-episode word alignment (+ silences, quiet, low-confidence)
+    analysis/studio/waveform.json       RMS peaks per 100 ms for the timeline bar
+    analysis/studio/suggestions.json    deterministic cleanup suggestions, nested natural ⊆ balanced ⊆ tight,
+                                        never auto-applied
+    analysis/studio/prepared-vN.json    the render spec: keep/mutes/bleeps, source↔output map, caption lines
+                                        ({start_ms, end_ms, text, speaker, words:[{w,s,e}]}), chapters, assets
+    previews/studio/rough-vN.mp4        whole episode at 640 px, cuts applied, no mastering
+    previews/studio/range-vN.mp4        an output-range slice with the full chain (mastering + captions)
+    exports/studio/vN/                  episode.mp4 (1080p) + extra aspects, episode.mp3/.wav, captions.srt/.vtt,
+                                        chapters.txt (;FFMETADATA1) + chapters.json, report.json, parts/ (resumable
+                                        ~5 min chunks keyed by a spec hash — a re-run re-encodes only missing parts)
+
+Renderer notes: the studio spec routes before the clip check (it carries `clip_id` for older guards) and takes
+its mode from the spec, not the node config; audio is one full-length pass (mutes, 1 kHz bleeps, music ducked
+with sidechaincompress, two-pass loudnorm) muxed under chunked video; intro / title card / body / end card /
+outro are concatenated parts. Verified end-to-end on `joe-berger-10min` (raw NAMM interview): init 90 s,
+rough preview = spec duration exactly, export 96 s at −16.0 LUFS / −1.0 dBTP with a −141 ms duration delta.
+
+UI: `/studio?id=…` — transcript-first editor (select words → cut / mute / bleep, struck-through restore,
+speakers, search, chapters), skip-over-cuts source playback, waveform timeline, inspector (cleanup modes,
+audio finishing, look, captions, branding, versions, preview/export), suggestions panel. Undo/redo, autosave,
+reload-safe. Limitations: speaker labels are manual (no diarization), one camera angle (no active-speaker
+switching), suggestions are heuristic (no LLM pass yet).

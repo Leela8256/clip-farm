@@ -1,10 +1,14 @@
 """
-podcast_render — renders a prepared clip spec into preview or export files.
+podcast_render — renders a prepared spec into preview or export files.
 
-The spec (text lane JSON from podcast_prepare_clip) carries the source path,
-the snapped boundaries, the keep segments and the aligned words; this node
-only does media work: audio clean-up + mastering, the cut/reframe/caption
-video graph, sidecars, thumbnail, a report, and the project's clip registry.
+Two paths share this node:
+
+* the clip path (spec with `clip_id`) — unchanged: audio clean-up + mastering,
+  the cut/reframe/caption video graph, sidecars, thumbnail, report, registry.
+* the studio path (spec with `studio`) — a whole edited episode: one full-length
+  audio pass (cuts, mutes, bleeps, ducked music, two-pass mastering), the picture
+  in resumable ~5 minute parts with burned captions and the logo, intro/outro and
+  title/end cards concatenated around it, then MP3/WAV/SRT/VTT/chapters/report.
 """
 
 from __future__ import annotations
@@ -17,20 +21,43 @@ from pathlib import Path
 from rocketlib import IInstanceBase, Entry, warning
 from ai.common.schema import Answer
 
-from local_nodes.podcast_common.store import get_store, write_file, write_json
+from local_nodes.podcast_common.store import download_to, exists, get_store, write_file, write_json
 from local_nodes.podcast_common.project import Project, load_project, read_json_or, save_project, update_status
 from local_nodes.podcast_common.cache import local_source
 from local_nodes.podcast_common.config import as_bool
 from local_nodes.podcast_common.media import (
+    CAPTION_STYLE_PRESETS,
+    EPISODE_PART_MS,
     LAYOUTS,
+    aspect_dims,
+    assemble_episode_audio,
+    capped_dims,
+    caption_layout_for,
+    chapters_payload,
+    colour_dialogue,
+    concat_parts,
     dims,
+    conform_audio,
+    encode_audio_deliverable,
+    ffmetadata_chapters,
     measure_loudness,
+    mux_episode,
+    plan_episode_parts,
     probe,
+    range_to_keep,
+    render_asset_part,
     render_audio,
+    render_card,
     render_clip_video,
+    render_episode_audio,
+    render_episode_part,
     render_layout_video,
+    restyle_ass,
+    shift_groups,
     slice_audio,
+    spec_hash,
     thumbnail,
+    transcode_aspect,
 )
 from local_nodes.podcast_common.clips import TimelineMap, map_words_to_output
 from local_nodes.podcast_common.captions import build_ass, build_srt, build_vtt, group_words, seam_placement
@@ -48,6 +75,7 @@ class IInstance(IInstanceBase):
 
     def open(self, obj: Entry):
         self._spec = None
+        self._studio = None
         self._t0 = time.time()
 
     def writeText(self, text: str):
@@ -55,11 +83,18 @@ class IInstance(IInstanceBase):
             data = json.loads(text)
         except (TypeError, ValueError):
             return
-        if isinstance(data, dict) and data.get('clip_id') and data.get('project'):
+        # the studio spec carries clip_id too (older engines' guards expect it),
+        # so the studio check must come first or the clip path claims the episode
+        if isinstance(data, dict) and data.get('project') and data.get('studio') and data.get('keep') is not None:
+            self._studio = data
+        elif isinstance(data, dict) and data.get('clip_id') and data.get('project'):
             self._spec = data
 
     def closing(self):
         store = get_store()
+        if self._studio and not self._spec and store is not None:
+            self._close_studio(store)
+            return
         if not self._spec or store is None:
             warning(f'{NODE}: no clip spec received')
             self._emit({'error': 'podcast_render received no clip spec'})
@@ -242,6 +277,362 @@ class IInstance(IInstanceBase):
         update_status(store, project, NODE, 'rendered', pipe, clip=clip_id, mode=mode, files=sorted(files), seconds=seconds)
         return {**project.to_ref(), **report}
 
+    # ------------------------------------------------------------------ studio
+    #
+    # The episode path. The spec (analysis/studio/prepared-v<n>.json, forwarded on
+    # the text lane) carries the keep list, the mutes/bleeps, the output-timeline
+    # captions and chapters, the verified assets and the audio/visual settings.
+
+    def _close_studio(self, store):
+        pipe = getattr(self.instance, 'pipeId', None)
+        project = Project(self._studio['project'])
+        try:
+            report = self._render_studio(store, project, pipe)
+        except Exception as exc:  # noqa: BLE001
+            warning(f'{NODE}: studio: {exc}')
+            update_status(store, project, NODE, 'error', pipe, mode='studio',
+                          version=self._studio.get('version'), message=str(exc))
+            report = {**project.to_ref(), 'kind': 'studio', 'studio': self._studio.get('studio'),
+                      'version': self._studio.get('version'), 'error': str(exc)}
+        self._emit(report)
+
+    def _render_studio(self, store, project: Project, pipe) -> dict:
+        cfg = self.IGlobal.config
+        spec = self._studio
+        # the spec carries the mode twice for tolerance: `studio` may be a bare
+        # true marker (the prepare node's shape) with the mode in `mode`
+        mode = 'export' if 'export' in (str(spec.get('studio') or '').lower(), str(spec.get('mode') or '').lower()) else 'preview'
+        version = int(spec.get('version') or 1)
+        quality = str(spec.get('quality') or ('full' if mode == 'export' else 'rough')).lower()
+        rng = spec.get('range') if isinstance(spec.get('range'), (list, tuple)) and len(spec.get('range')) == 2 else None
+        visual = spec.get('visual') or {}
+        audio_cfg = spec.get('audio') or {}
+        assets = spec.get('assets') or {}
+        media = spec.get('media') or {}
+        has_video = bool(media.get('has_video', True))
+        aspect = str(visual.get('aspect_ratio') or '16:9')
+        fit = str(visual.get('fit') or 'fit')
+        background = visual.get('background') or 'blur'
+        warnings_out: list[str] = list(spec.get('warnings') or [])
+
+        full_keep = [(int(s), int(e)) for s, e in (spec.get('keep') or []) if int(e) > int(s)]
+        if not full_keep:
+            raise ValueError('the prepared spec has no keep segments')
+        mutes = [(int(s), int(e)) for s, e in (spec.get('mutes') or []) if int(e) > int(s)]
+        bleeps = [(int(s), int(e)) for s, e in (spec.get('bleeps') or []) if int(e) > int(s)]
+        map_rows = spec.get('map') or _map_from_keep(full_keep)
+        groups, style, speaker_colors, preset = _studio_captions(spec)
+
+        # a range preview renders only the source slices behind an output window
+        offset_ms = 0
+        keep = full_keep
+        if mode == 'preview' and rng:
+            offset_ms = max(0, int(rng[0]))
+            keep = [(int(s), int(e)) for s, e in range_to_keep(map_rows, offset_ms, int(rng[1])) if e > s]
+            if not keep:
+                raise ValueError('the requested range falls entirely inside a cut')
+        body_ms = sum(e - s for s, e in keep)
+
+        source_fps = float(media.get('fps') or 0) or 30.0
+        if mode == 'export':
+            out_w, out_h = aspect_dims(aspect, 1080)
+            fps, crf, x264 = min(30, int(round(source_fps))) or 30, 20, 'veryfast'
+            channels, master = 2, bool(audio_cfg.get('master', True))
+            clean = (bool(audio_cfg.get('noise_reduction', True)), bool(audio_cfg.get('high_pass', True)),
+                     bool(audio_cfg.get('compression', True)))
+        elif rng:
+            cap = min(1280, int(media.get('width') or 1280) or 1280)
+            out_w, out_h = capped_dims(aspect, max(640, cap))
+            fps, crf, x264 = min(30, int(round(source_fps))) or 30, 23, str(cfg['preset'])
+            channels, master = 2, bool(audio_cfg.get('master', True))
+            clean = (bool(audio_cfg.get('noise_reduction', True)), bool(audio_cfg.get('high_pass', True)),
+                     bool(audio_cfg.get('compression', True)))
+        else:                                  # the rough whole-episode pass
+            out_w, out_h = capped_dims(aspect, 640)
+            fps, crf, x264 = 15, 32, 'ultrafast'
+            channels, master = 1, False
+            clean = (False, bool(audio_cfg.get('high_pass', True)), False)
+        captions_on = bool(visual.get('captions', True)) and bool(groups) and bool(cfg['captions'])
+
+        work = Path(tempfile.mkdtemp(prefix='podcast_studio_'))
+        files: dict[str, str] = {}
+        part_times: list[dict] = []
+        try:
+            local = local_source(store, spec['source'])
+            logo_cfg = assets.get('logo') if isinstance(assets.get('logo'), dict) else None
+            logo_path = self._studio_asset(store, logo_cfg, 'logo', warnings_out)
+            music_cfg = assets.get('music') if isinstance(assets.get('music'), dict) else None
+            music_path = self._studio_asset(store, music_cfg, 'music', warnings_out) if mode != 'preview' or rng else None
+            hashed = spec_hash(spec)
+            export_dir = f'studio/v{version}'
+
+            # ---- picture: resumable ~5 minute parts, each with its own captions
+            video_files: list[Path] = []
+            audio_pieces: list[dict] = []
+            lead_ms = tail_ms = 0
+            if has_video:
+                intro = self._studio_asset(store, assets.get('intro'), 'intro', warnings_out) if mode == 'export' else None
+                outro = self._studio_asset(store, assets.get('outro'), 'outro', warnings_out) if mode == 'export' else None
+                title_card = assets.get('title_card') if (mode == 'export' and isinstance(assets.get('title_card'), dict)) else None
+                end_card = assets.get('end_card') if (mode == 'export' and isinstance(assets.get('end_card'), dict)) else None
+
+                if intro:
+                    part = render_asset_part(intro, work / 'lead-intro.mp4', out_w, out_h, fps=fps, crf=crf,
+                                             preset=x264, fit=fit, background=background)
+                    length = int(probe(part)['duration_ms'])
+                    video_files.append(part)
+                    audio_pieces.append(self._asset_audio(intro, work / 'lead-intro.wav', length, warnings_out))
+                    lead_ms += length
+                if title_card:
+                    seconds = float(title_card.get('seconds') or 3)
+                    part = render_card(title_card.get('text') or spec.get('title') or '', title_card.get('subtitle') or '',
+                                       seconds, work / 'lead-title.mp4', out_w, out_h, fps=fps, crf=crf, preset=x264)
+                    length = int(probe(part)['duration_ms'])
+                    video_files.append(part)
+                    audio_pieces.append({'silence_ms': length})
+                    lead_ms += length
+
+                parts = plan_episode_parts(keep, EPISODE_PART_MS)
+                done, manifest = self._studio_manifest(store, project, export_dir, hashed, parts, mode)
+                for part in parts:
+                    started = time.time()
+                    update_status(store, project, NODE, 'rendering', pipe, mode='studio', quality=quality,
+                                  version=version, part=part['n'], parts=len(parts))
+                    local_part = work / f"part-{part['n']:03d}.mp4"
+                    reused = False
+                    store_path = project.exports(f"{export_dir}/parts/part-{part['n']:03d}.mp4")
+                    if mode == 'export' and part['n'] in done and exists(store, store_path):
+                        try:
+                            download_to(store, store_path, local_part)
+                            reused = True
+                        except Exception:  # noqa: BLE001
+                            reused = False
+                    if not reused:
+                        ass = None
+                        if captions_on:
+                            window = shift_groups(groups, offset_ms + part['out_start_ms'], part['duration_ms'])
+                            ass = self._studio_ass(work / f"part-{part['n']:03d}.ass", window, out_w, out_h,
+                                                   preset, style, speaker_colors)
+                        render_episode_part(local, [(s, e) for s, e in part['keep']], local_part, out_w, out_h,
+                                            fps=fps, crf=crf, preset=x264, fit=fit, background=background,
+                                            ass_path=ass, logo=logo_cfg, logo_path=logo_path)
+                        if mode == 'export':
+                            write_file(store, store_path, local_part)
+                            manifest = self._studio_mark_done(store, project, export_dir, manifest, part['n'])
+                    video_files.append(local_part)
+                    part_times.append({'n': part['n'], 'duration_ms': part['duration_ms'],
+                                       'seconds': round(time.time() - started, 1), 'reused': reused})
+
+                audio_pieces.append({'path': None})            # placeholder for the mastered body
+                if end_card:
+                    seconds = float(end_card.get('seconds') or 3)
+                    part = render_card(end_card.get('text') or '', end_card.get('subtitle') or '', seconds,
+                                       work / 'tail-end.mp4', out_w, out_h, fps=fps, crf=crf, preset=x264)
+                    length = int(probe(part)['duration_ms'])
+                    video_files.append(part)
+                    audio_pieces.append({'silence_ms': length})
+                    tail_ms += length
+                if outro:
+                    part = render_asset_part(outro, work / 'tail-outro.mp4', out_w, out_h, fps=fps, crf=crf,
+                                             preset=x264, fit=fit, background=background)
+                    length = int(probe(part)['duration_ms'])
+                    video_files.append(part)
+                    audio_pieces.append(self._asset_audio(outro, work / 'tail-outro.wav', length, warnings_out))
+                    tail_ms += length
+            else:
+                audio_pieces.append({'path': None})
+
+            # ---- sound: one full-length pass so the two-pass loudness is correct
+            update_status(store, project, NODE, 'mastering', pipe, mode='studio', quality=quality, version=version,
+                          master=master)
+            body_wav = render_episode_audio(
+                local, keep, work / 'body.wav', mutes=mutes, bleeps=bleeps,
+                noise_reduction=clean[0], high_pass=clean[1], compression=clean[2],
+                music_path=music_path, music=music_cfg, master=master,
+                loudness_lufs=float(audio_cfg.get('loudness_lufs') or -16), channels=channels,
+            )
+            for piece in audio_pieces:
+                if piece.get('path') is None and 'silence_ms' not in piece:
+                    piece['path'] = str(body_wav)
+            final_wav = assemble_episode_audio(audio_pieces, work / 'episode-audio.wav', channels=channels)
+
+            # ---- join + mux
+            if has_video:
+                joined = concat_parts(video_files, work / 'video.mp4', work)
+                final = mux_episode(joined, final_wav, work / 'episode.mp4')
+            else:
+                final = encode_audio_deliverable(final_wav, work / 'episode.mp3')
+
+            check = probe(final)
+            loudness = measure_loudness(final)
+            total_ms = lead_ms + body_ms + tail_ms
+            extras = [a for a in (spec.get('extra_aspects') or visual.get('extra_aspects') or []) if str(a) != aspect]
+
+            if mode == 'export':
+                out_name = 'episode.mp4' if has_video else 'episode-audio.mp3'
+                files['episode'] = write_file(store, project.exports(f'{export_dir}/{out_name}'), final)
+                if has_video:
+                    for extra in extras:
+                        ew, eh = aspect_dims(extra, 1080)
+                        alt = transcode_aspect(final, work / f"episode-{str(extra).replace(':', 'x')}.mp4", ew, eh,
+                                               fps=fps, crf=crf, preset=x264, fit=fit, background=background)
+                        files[f"episode_{str(extra).replace(':', 'x')}"] = write_file(
+                            store, project.exports(f"{export_dir}/episode-{str(extra).replace(':', 'x')}.mp4"), alt)
+                files['mp3'] = write_file(store, project.exports(f'{export_dir}/episode.mp3'),
+                                          encode_audio_deliverable(final_wav, work / 'episode.mp3'))
+                files['wav'] = write_file(store, project.exports(f'{export_dir}/episode.wav'),
+                                          encode_audio_deliverable(final_wav, work / 'episode.wav'))
+                shifted = shift_groups(groups, -lead_ms) if lead_ms else groups
+                if shifted:
+                    srt = work / 'captions.srt'
+                    srt.write_text(build_srt(shifted), encoding='utf-8')
+                    files['srt'] = write_file(store, project.exports(f'{export_dir}/captions.srt'), srt)
+                    vtt = work / 'captions.vtt'
+                    vtt.write_text(build_vtt(shifted), encoding='utf-8')
+                    files['vtt'] = write_file(store, project.exports(f'{export_dir}/captions.vtt'), vtt)
+                chapters = [{'title': c.get('title'), 'out_ms': int(c.get('out_ms') or 0) + lead_ms}
+                            for c in (spec.get('chapters') or [])]
+                if chapters:
+                    meta = work / 'chapters.txt'
+                    meta.write_text(ffmetadata_chapters(chapters, total_ms, spec.get('title')), encoding='utf-8')
+                    files['chapters_txt'] = write_file(store, project.exports(f'{export_dir}/chapters.txt'), meta)
+                    write_json(store, project.exports(f'{export_dir}/chapters.json'),
+                               chapters_payload(chapters, total_ms))
+                    files['chapters_json'] = project.exports(f'{export_dir}/chapters.json')
+            else:
+                name = f"range-v{version}" if rng else f"rough-v{version}"
+                suffix = 'mp4' if has_video else 'mp3'
+                files['preview'] = write_file(store, project.previews(f'studio/{name}.{suffix}'), final)
+                chapters = []
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+        delta = check['duration_ms'] - total_ms
+        seconds = round(time.time() - self._t0, 1)
+        report = {
+            'schema_version': 1,
+            'kind': 'studio',
+            'mode': mode,
+            'quality': quality,
+            'version': version,
+            'title': spec.get('title'),
+            'range': [int(rng[0]), int(rng[1])] if rng else None,
+            'duration_ms': check['duration_ms'],
+            'output_duration_ms': total_ms,
+            'body_duration_ms': body_ms,
+            'lead_ms': lead_ms,
+            'tail_ms': tail_ms,
+            'files': files,
+            'aspect_ratio': aspect,
+            'extra_aspects': extras if mode == 'export' else [],
+            'width': check['width'],
+            'height': check['height'],
+            'fps': fps,
+            'cuts': max(0, len(full_keep) - 1),
+            'muted': len(mutes),
+            'bleeped': len(bleeps),
+            'captions': bool(captions_on),
+            'caption_lines': len(groups) if captions_on else 0,
+            'chapters': len(chapters),
+            'mastered': bool(master),
+            'music': bool(music_path),
+            'loudness': loudness,
+            'loudness_target_lufs': float(audio_cfg.get('loudness_lufs') or -16) if master else None,
+            'parts': part_times,
+            'spec_hash': hashed,
+            'warnings': warnings_out,
+            'validation': {
+                'expected_duration_ms': total_ms,
+                'duration_ms': check['duration_ms'],
+                'delta_ms': delta,
+                'duration_ok': abs(delta) <= 500,
+                'has_video': check['has_video'],
+                'has_audio': check['has_audio'],
+                'streams_ok': bool(check['has_audio'] and (check['has_video'] or not has_video)),
+            },
+            'rendered_at': time.time(),
+            'seconds': seconds,
+        }
+        if not report['validation']['duration_ok']:
+            warnings_out.append(f'The finished file is {delta / 1000:.1f}s off the planned length.')
+        if mode == 'export':
+            write_json(store, project.exports(f'{export_dir}/report.json'), report)
+            try:
+                data = load_project(store, project)
+                studio = data.setdefault('studio', {})
+                studio[str(version)] = {'files': files, 'duration_ms': check['duration_ms'],
+                                        'rendered_at': report['rendered_at']}
+                save_project(store, project, data)
+            except Exception as exc:  # noqa: BLE001
+                warning(f'{NODE}: studio registry: {exc}')
+        else:
+            write_json(store, project.previews(f"studio/{'range' if rng else 'rough'}-v{version}.json"), report)
+
+        update_status(store, project, NODE, 'rendered', pipe, mode='studio', quality=quality, version=version,
+                      files=sorted(files), seconds=seconds)
+        return {**project.to_ref(), **report}
+
+    # ---------------------------------------------------------------- helpers
+
+    def _studio_asset(self, store, asset, kind: str, warnings_out: list[str]):
+        """Cache one verified asset locally; a missing file is a warning, not a failure."""
+        path = None
+        if isinstance(asset, dict):
+            path = asset.get('path')
+        elif isinstance(asset, str):
+            path = asset
+        if not path:
+            return None
+        try:
+            return local_source(store, path)
+        except Exception as exc:  # noqa: BLE001
+            warnings_out.append(f'The {kind} file could not be read and was skipped.')
+            warning(f'{NODE}: studio asset {kind}: {exc}')
+            return None
+
+    def _asset_audio(self, asset_path, out_wav: Path, length_ms: int, warnings_out: list[str]) -> dict:
+        try:
+            return {'path': str(conform_audio(asset_path, out_wav, length_ms))}
+        except Exception:  # noqa: BLE001
+            warnings_out.append('One of the added clips had no sound; it plays silent.')
+            return {'silence_ms': length_ms}
+
+    def _studio_ass(self, path: Path, groups: list, out_w: int, out_h: int, preset: str,
+                    style: dict, speaker_colors: dict):
+        if not groups:
+            return None
+        text = build_ass(groups, caption_layout_for(out_w, out_h), preset)
+        text = restyle_ass(text, style)
+        if style.get('per_speaker_colors') and speaker_colors:
+            text = colour_dialogue(text, [speaker_colors.get((g[0] or {}).get('speaker')) for g in groups])
+        path.write_text(text, encoding='utf-8')
+        return path
+
+    def _studio_manifest(self, store, project: Project, export_dir: str, hashed: str, parts: list[dict], mode: str):
+        """parts/manifest.json — which parts of THIS spec are already finished."""
+        if mode != 'export':
+            return set(), None
+        path = project.exports(f'{export_dir}/parts/manifest.json')
+        existing = read_json_or(store, path, None)
+        done: set[int] = set()
+        if isinstance(existing, dict) and existing.get('spec_hash') == hashed:
+            done = {int(p['n']) for p in existing.get('parts') or [] if p.get('done')}
+        manifest = {'schema_version': 1, 'spec_hash': hashed, 'updated': time.time(),
+                    'parts': [{'n': p['n'], 'keep_slice': p['keep'], 'out_start_ms': p['out_start_ms'],
+                               'out_end_ms': p['out_end_ms'], 'done': p['n'] in done} for p in parts]}
+        write_json(store, path, manifest)
+        return done, manifest
+
+    def _studio_mark_done(self, store, project: Project, export_dir: str, manifest, n: int):
+        if not isinstance(manifest, dict):
+            return manifest
+        for entry in manifest.get('parts') or []:
+            if int(entry['n']) == int(n):
+                entry['done'] = True
+        manifest['updated'] = time.time()
+        write_json(store, project.exports(f'{export_dir}/parts/manifest.json'), manifest)
+        return manifest
+
     def _emit(self, payload: dict):
         answer = Answer(expectJson=True)
         answer.setAnswer(payload)
@@ -249,3 +640,55 @@ class IInstance(IInstanceBase):
             self.instance.writeAnswers(answer)
         if self.instance.hasListener('text'):
             self.instance.writeText(json.dumps(payload))
+
+
+def _map_from_keep(keep: list[tuple[int, int]]) -> list[list[int]]:
+    """The spec's map, rebuilt from the keep list when an older spec omits it."""
+    rows, out = [], 0
+    for start, end in keep:
+        rows.append([start, end, out])
+        out += end - start
+    return rows
+
+
+def _norm_words(items) -> list[dict]:
+    """Words in either the spec's short form ({w,s,e}) or the caption form."""
+    words = []
+    for w in items or []:
+        if not isinstance(w, dict):
+            continue
+        word = w.get('word', w.get('w'))
+        start, end = w.get('start_ms', w.get('s')), w.get('end_ms', w.get('e'))
+        if word is None or start is None or end is None:
+            continue
+        words.append({'word': str(word), 'start_ms': int(start), 'end_ms': int(end), 'speaker': w.get('speaker')})
+    return words
+
+
+def _studio_captions(spec: dict):
+    """(groups on the output timeline, style, speaker colours, burn-in preset)."""
+    caps = spec.get('captions') if isinstance(spec.get('captions'), dict) else {}
+    raw = caps.get('groups') or []
+    groups: list[list[dict]] = []
+    if raw and isinstance(raw[0], dict) and isinstance(raw[0].get('words'), list):
+        # the prepare node's shape: one dict per caption line with the timed
+        # words nested inside and the speaker on the line
+        for group in raw:
+            words = _norm_words(group.get('words'))
+            for w in words:
+                w.setdefault('speaker', None)
+                if w['speaker'] is None:
+                    w['speaker'] = group.get('speaker')
+            if words:
+                groups.append(words)
+    elif raw and isinstance(raw[0], dict):
+        groups = group_words(_norm_words(raw))
+    else:
+        for group in raw:
+            words = _norm_words(group)
+            if words:
+                groups.append(words)
+    style = caps.get('style') or (spec.get('visual') or {}).get('caption_style') or {}
+    colours = caps.get('speaker_colors') or {}
+    preset = CAPTION_STYLE_PRESETS.get(str(style.get('preset') or 'classic').lower(), 'classic')
+    return groups, style, colours, preset

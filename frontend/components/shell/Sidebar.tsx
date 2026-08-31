@@ -3,7 +3,7 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { Clapperboard, History, PanelLeftClose, PanelLeftOpen, Upload } from "lucide-react";
+import { Clapperboard, History, PanelLeftClose, PanelLeftOpen, Scissors, Upload } from "lucide-react";
 import { getClient, getConnectionState, reconnect, subscribeConnection } from "@/lib/engine";
 import { recentEpisodes, subscribeRecent, type RecentEpisode } from "@/lib/recent";
 
@@ -65,11 +65,12 @@ export default function Sidebar() {
     });
   };
 
-  const currentEpisode = pathname === "/episode" ? params.get("id") : null;
-  const studioTarget = currentEpisode ? `/episode?id=${encodeURIComponent(currentEpisode)}` : recent[0] ? `/episode?id=${encodeURIComponent(recent[0].id)}` : "/history";
+  const currentEpisode = pathname === "/episode" || pathname === "/studio" ? params.get("id") : null;
+  const target = (route: string) => (currentEpisode ? `${route}?id=${encodeURIComponent(currentEpisode)}` : recent[0] ? `${route}?id=${encodeURIComponent(recent[0].id)}` : "/history");
   const items = [
     { href: "/", label: "New episode", icon: Upload, active: pathname === "/" },
-    { href: studioTarget, label: "Clip Studio", icon: Clapperboard, active: pathname === "/episode" },
+    { href: target("/episode"), label: "Clip Studio", icon: Clapperboard, active: pathname === "/episode" },
+    { href: target("/studio"), label: "Podcast Studio", icon: Scissors, active: pathname === "/studio" },
     { href: "/history", label: "History", icon: History, active: pathname === "/history" },
   ];
   const online = connection === "connected";

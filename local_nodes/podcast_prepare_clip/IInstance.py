@@ -14,8 +14,16 @@ the candidate and any saved edit). Optional:
 Resolution order for every option: the question > the saved edit (active
 version) > the Prompt Director request the clip came from > node config.
 
-Output (text lane): the clip plan that podcast_render consumes, persisted at
-analysis/clips/<id>/plan.json next to compliance.json.
+A question carrying 'studio: init | preview | export' instead of a clip works
+on the WHOLE episode (the editing studio): 'init' aligns the episode word by
+word and writes analysis/studio/{timeline,waveform,suggestions}.json;
+'preview'/'export' read the browser's edits/episode-edits.json and assemble
+analysis/studio/prepared-v<version>.json — the episode render spec — with an
+optional 'range: <a>-<b>' (output-timeline ms) and 'quality: rough | full'.
+
+Output (text lane): the clip plan (or, in studio mode, the episode spec) that
+podcast_render consumes, persisted at analysis/clips/<id>/plan.json next to
+compliance.json.
 """
 
 from __future__ import annotations
@@ -26,9 +34,9 @@ import time
 from pathlib import Path
 
 from rocketlib import IInstanceBase, Entry, AVI_ACTION, debug
-from ai.common.schema import Question
+from ai.common.schema import Answer, Question
 
-from local_nodes.podcast_common.store import get_store, write_json
+from local_nodes.podcast_common.store import exists, get_store, write_json
 from local_nodes.podcast_common.project import (
     Project,
     find_candidate,
@@ -56,6 +64,7 @@ from local_nodes.podcast_common.editing import (
 )
 from local_nodes.podcast_common.spec import CAPTION_PRESETS, RENDERABLE_ASPECTS, duration_window, normalize_spec
 from local_nodes.podcast_common.constraints import find_profanity
+from local_nodes.podcast_common import studio as studio_lib
 
 from .IGlobal import IGlobal
 
@@ -134,13 +143,141 @@ class IInstance(IInstanceBase):
         if not ctx.get('project'):
             raise ValueError(f"{NODE}: add 'project: projects/<episode>' to the question context")
         project = Project(ctx['project'])
+        step = str(ctx.get('studio') or '').strip().lower()
         try:
-            plan = self._prepare(store, project, ctx, question_text(question), pipe)
+            if step:                                    # whole-episode editing studio
+                spec, manifest = self._studio(store, project, ctx, step, pipe)
+            else:                                       # one clip (unchanged)
+                spec, manifest = self._prepare(store, project, ctx, question_text(question), pipe), None
         except Exception as exc:  # noqa: BLE001
-            update_status(store, project, NODE, 'error', pipe, clip=ctx.get('clip'), message=str(exc))
+            update_status(store, project, NODE, 'error', pipe, clip=ctx.get('clip'), studio=step or None,
+                          message=str(exc))
             raise
-        if self.instance.hasListener('text'):
-            self.instance.writeText(json.dumps(plan))
+        if spec is not None and self.instance.hasListener('text'):
+            self.instance.writeText(json.dumps(spec))
+        if manifest is not None and self.instance.hasListener('answers'):
+            answer = Answer(expectJson=True)
+            answer.setAnswer(manifest)
+            self.instance.writeAnswers(answer)
+
+    # ---------------------------------------------------------------- studio
+
+    def _studio(self, store, project: Project, ctx: dict, step: str, pipe) -> tuple[dict | None, dict]:
+        """The whole-episode branch: (spec for the renderer | None, manifest for the answers lane)."""
+        if step == 'init':
+            return None, self._studio_init(store, project, ctx, pipe)
+        if step in ('preview', 'export'):
+            spec = self._studio_spec(store, project, ctx, step, pipe)
+            return spec, {**project.to_ref(), 'studio': step, 'version': spec['version'],
+                          'output_duration_ms': spec['output_duration_ms'], 'quality': spec['quality'],
+                          'range': spec['range'], 'chapters': len(spec['chapters']),
+                          'spec': project.analysis(f"studio/prepared-v{spec['version']}.json"),
+                          'warnings': spec['warnings']}
+        raise ValueError(f"{NODE}: unknown studio step {step!r} — use 'studio: init | preview | export'")
+
+    def _studio_init(self, store, project: Project, ctx: dict, pipe) -> dict:
+        """Align the episode end to end, then write its timeline, waveform and suggestions."""
+        t0 = time.time()
+        cfg = self.IGlobal.config
+        data = load_project(store, project)
+        source = data.get('source')
+        if not source:
+            raise ValueError(f'{NODE}: project.json has no source')
+        media = data.get('media') or {}
+        transcript = read_json_or(store, project.analysis('transcript.json'), {}) or {}
+        sentences = [s for s in (transcript.get('sentences') or []) if isinstance(s, dict)]
+        duration_ms = int(media.get('duration_ms') or transcript.get('duration_ms') or 0)
+        if duration_ms <= 0:
+            raise ValueError(f'{NODE}: the recording length is unknown — run the episode analysis first')
+        model = str(cfg.get('studio_model') or cfg['model'])
+
+        update_status(store, project, NODE, 'preparing', pipe, studio='init', duration_ms=duration_ms, model=model)
+        local = local_source(store, source)
+        work = Path(tempfile.mkdtemp(prefix='podcast_studio_'))
+        words: list[dict] = []
+        language = None
+        try:
+            wav = studio_lib.analysis_wav(local, work / 'episode.wav')
+            piece_ms = max(10_000, int(float(cfg['studio_piece_seconds']) * 1000))
+            pieces = max(1, -(-duration_ms // piece_ms))
+            for i in range(pieces):
+                a = i * piece_ms
+                b = min(duration_ms, a + piece_ms)
+                if b - a < 200:
+                    continue
+                update_status(store, project, NODE, 'studio_aligning', pipe, piece=i + 1, pieces=pieces,
+                              words=len(words), seconds=round(b / 1000, 1))
+                piece_wav = slice_audio(wav, a, b, work / f'piece-{i:04d}.wav')
+                hint = ' '.join((s.get('text') or '') for s in sentences
+                                if s.get('start_ms', 0) < b and s.get('end_ms', 0) > a)[:200]
+                aligned = align_words(piece_wav, model, str(cfg['language'] or '') or None, hint=hint or None)
+                language = language or aligned.get('language')
+                for w in aligned['words']:
+                    start = w['start_ms'] + a
+                    if start >= b + 1000:              # aligner overshoot at the tail of a piece
+                        continue
+                    words.append({**w, 'start_ms': start, 'end_ms': min(duration_ms, w['end_ms'] + a)})
+                piece_wav.unlink(missing_ok=True)
+            update_status(store, project, NODE, 'studio_suggesting', pipe, words=len(words))
+            silences = detect_silences(wav, min_silence_ms=studio_lib.SILENCE_MIN_MS, keep_pause_ms=0)
+            peaks = studio_lib.peaks_from_wav(wav)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+        words = [w for w in sorted(words, key=lambda w: w['start_ms']) if w['end_ms'] > w['start_ms']]
+        # the level scan misses pauses under room tone, the aligner misses pauses inside a
+        # sentence: take both, then carve every spoken word back out of the result
+        silences = studio_lib.speech_free_silences(
+            list(silences) + studio_lib.silences_from_words(words, duration_ms), words)
+        quiet = studio_lib.quiet_ranges(peaks, silences=silences)
+        low_confidence = studio_lib.low_confidence_ranges(words)
+        timeline = studio_lib.timeline_doc(episode_id=project.episode_id, duration_ms=duration_ms, model=model,
+                                           words=words, silences=silences, quiet=quiet,
+                                           low_confidence=low_confidence, sentence_count=len(sentences),
+                                           language=language)
+        suggestions = studio_lib.build_suggestions(words, silences=silences, quiet=quiet,
+                                                   low_confidence=low_confidence, sentences=sentences,
+                                                   duration_ms=duration_ms)
+        waveform = studio_lib.waveform_doc(peaks, duration_ms)
+        write_json(store, project.analysis('studio/timeline.json'), timeline)
+        write_json(store, project.analysis('studio/waveform.json'), waveform)
+        write_json(store, project.analysis('studio/suggestions.json'), suggestions)
+
+        seconds = round(time.time() - t0, 1)
+        update_status(store, project, NODE, 'studio_ready', pipe, words=len(words),
+                      suggestions=len(suggestions['suggestions']), duration_ms=duration_ms, seconds=seconds)
+        return {**project.to_ref(), 'studio': 'init', 'words': len(words),
+                'suggestions': len(suggestions['suggestions']), 'duration_ms': duration_ms,
+                'levels': {level: len(ids) for level, ids in suggestions['modes'].items()},
+                'silences': len(timeline['silences']), 'peaks': len(peaks), 'seconds': seconds,
+                'files': {'timeline': project.analysis('studio/timeline.json'),
+                          'waveform': project.analysis('studio/waveform.json'),
+                          'suggestions': project.analysis('studio/suggestions.json')}}
+
+    def _studio_spec(self, store, project: Project, ctx: dict, step: str, pipe) -> dict:
+        """Turn the saved episode edits into the render spec for a preview or an export."""
+        data = load_project(store, project)
+        source = data.get('source')
+        if not source:
+            raise ValueError(f'{NODE}: project.json has no source')
+        edits = read_json_or(store, project.edits('episode-edits.json'), {}) or {}
+        timeline = read_json_or(store, project.analysis('studio/timeline.json'), {}) or {}
+        words = studio_lib.expand_words(timeline.get('words') or [])
+        version = ctx.get('version') if str(ctx.get('version') or '').strip() else edits.get('version')
+        quality = str(ctx.get('quality') or ('rough' if step == 'preview' else 'full')).strip().lower()
+        update_status(store, project, NODE, 'preparing', pipe, studio=step, quality=quality,
+                      edits=len(edits.get('operations') or []))
+        spec = studio_lib.build_prepared(
+            project=project.root, episode_id=project.episode_id, source=source, media=data.get('media') or {},
+            edits=edits, words=words, version=version, range_text=ctx.get('range'), quality=quality,
+            asset_exists=lambda path: exists(store, path), mode=step)
+        if not words:
+            spec['warnings'].append('The recording has not been prepared for editing yet — captions were left out.')
+        write_json(store, project.analysis(f"studio/prepared-v{spec['version']}.json"), spec)
+        update_status(store, project, NODE, 'studio_prepared', pipe, studio=step, version=spec['version'],
+                      output_ms=spec['output_duration_ms'], cuts=len(spec['cuts']), mutes=len(spec['mutes']),
+                      bleeps=len(spec['bleeps']), warnings=len(spec['warnings']))
+        return spec
 
     # ------------------------------------------------------------------ plan
 

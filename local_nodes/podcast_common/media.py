@@ -580,3 +580,773 @@ def render_layout_video(
         ]
     )
     return out_path
+
+
+# ------------------------------------------------------------ episode studio
+#
+# Full-episode rendering (the Podcast Editing Studio). Everything below is
+# additive: the clip path above is untouched. The same rules apply — trim +
+# concat (never chained xfade), audio and video cut from the same keep list,
+# mutes/bleeps on the source timeline, setsar=1 before every concat.
+
+EPISODE_PART_MS = 300_000          # ~5 minutes of output per resumable video part
+EPISODE_MIN_PART_MS = 20_000       # a shorter tail is folded into the previous part
+BLEEP_HZ = 1000
+BLEEP_DB = -14.0
+DUCK_THRESHOLD = 0.03
+DUCK_ATTACK_MS = 20
+DUCK_RELEASE_MS = 400
+EPISODE_DECLICK_MS = 30
+
+ASPECTS = {'16:9': (16, 9), '9:16': (9, 16), '1:1': (1, 1), '4:5': (4, 5), '5:4': (5, 4),
+           '4:3': (4, 3), '3:4': (3, 4), '21:9': (21, 9)}
+
+# The studio's caption vocabulary mapped onto the burn-in presets in captions.py.
+CAPTION_STYLE_PRESETS = {'clean': 'minimal', 'classic': 'classic', 'bold': 'yellow-bold',
+                         'yellow': 'yellow-bold', 'outline': 'white-outline', 'minimal': 'minimal'}
+
+_CARD_FONTS = (
+    '/System/Library/Fonts/Supplemental/Arial.ttf',
+    '/System/Library/Fonts/Helvetica.ttc',
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    '/usr/share/fonts/dejavu/DejaVuSans.ttf',
+)
+
+
+def card_font_file() -> str | None:
+    """A TTF for drawtext (ffmpeg has no fontconfig in some builds); None = let ffmpeg pick."""
+    for candidate in _CARD_FONTS:
+        if os.path.exists(candidate):
+            return candidate
+    try:
+        import matplotlib  # noqa: F401  (only if the engine happens to have it)
+
+        path = Path(matplotlib.get_data_path()) / 'fonts/ttf/DejaVuSans.ttf'
+        if path.exists():
+            return str(path)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def parse_aspect(aspect: str | None) -> tuple[int, int]:
+    if isinstance(aspect, str) and aspect in ASPECTS:
+        return ASPECTS[aspect]
+    text = str(aspect or '16:9').replace('x', ':').strip()
+    try:
+        w, h = text.split(':')
+        wi, hi = int(float(w)), int(float(h))
+        if wi > 0 and hi > 0:
+            return wi, hi
+    except (ValueError, TypeError):
+        pass
+    return 16, 9
+
+
+def aspect_dims(aspect: str | None, short_edge: int = 1080) -> tuple[int, int]:
+    """Output geometry from the SHORT edge: 16:9 -> 1920x1080, 9:16 -> 1080x1920, 1:1 -> 1080x1080."""
+    w, h = parse_aspect(aspect)
+    short_edge = int(short_edge) // 2 * 2
+    if w <= h:
+        width, height = short_edge, int(round(short_edge * h / w))
+    else:
+        height, width = short_edge, int(round(short_edge * w / h))
+    return width // 2 * 2, height // 2 * 2
+
+
+def capped_dims(aspect: str | None, max_edge: int) -> tuple[int, int]:
+    """Same shape, long edge capped (range previews and the rough pass)."""
+    w, h = parse_aspect(aspect)
+    long_edge = int(max_edge) // 2 * 2
+    if w >= h:
+        width, height = long_edge, int(round(long_edge * h / w))
+    else:
+        height, width = long_edge, int(round(long_edge * w / h))
+    return max(2, width // 2 * 2), max(2, height // 2 * 2)
+
+
+def caption_layout_for(width: int, height: int) -> str:
+    """Which caption geometry (captions.CAPTION_LAYOUTS) fits an output frame."""
+    return 'vertical' if height > width else 'wide'
+
+
+# ------------------------------------------------------------------- ranges
+
+
+def range_to_keep(map_rows: list, out_a: int, out_b: int) -> list[tuple[int, int]]:
+    """
+    Output-timeline window -> the source keep slices that produce it, using the
+    prepared spec's map ([src_start, src_end, out_start] per kept segment).
+    """
+    out_a, out_b = int(out_a), int(out_b)
+    if out_b <= out_a:
+        return []
+    slices: list[tuple[int, int]] = []
+    for row in map_rows or []:
+        src_s, src_e, out_s = int(row[0]), int(row[1]), int(row[2])
+        out_e = out_s + (src_e - src_s)
+        a, b = max(out_a, out_s), min(out_b, out_e)
+        if b <= a:
+            continue
+        slices.append((src_s + (a - out_s), src_s + (b - out_s)))
+    return slices
+
+
+def shift_groups(groups: list[list[dict]], offset_ms: int, window_ms: int | None = None) -> list[list[dict]]:
+    """Caption groups moved onto a part's / range's local timeline, dropping what falls outside."""
+    out: list[list[dict]] = []
+    for group in groups or []:
+        words = []
+        for w in group:
+            start = int(w['start_ms']) - offset_ms
+            end = int(w['end_ms']) - offset_ms
+            if end <= 0 or (window_ms is not None and start >= window_ms):
+                continue
+            start = max(0, start)
+            if window_ms is not None:
+                end = min(window_ms, end)
+            if end > start:
+                words.append({**w, 'start_ms': start, 'end_ms': end})
+        if words:
+            out.append(words)
+    return out
+
+
+# -------------------------------------------------------------- episode audio
+
+
+def _range_expr(ranges: list[tuple[int, int]]) -> str:
+    return '+'.join(f'between(t,{s / 1000:.3f},{e / 1000:.3f})' for s, e in ranges)
+
+
+def episode_audio_graph(
+    keep: list[tuple[int, int]],
+    mutes: list[tuple[int, int]] | None = None,
+    bleeps: list[tuple[int, int]] | None = None,
+    *,
+    noise_reduction: bool = True,
+    high_pass: bool = True,
+    compression: bool = True,
+    music: dict | None = None,
+    music_input: int = 1,
+    source_duration_ms: int = 0,
+    fade_in_ms: int = EPISODE_DECLICK_MS,
+    fade_out_ms: int = EPISODE_DECLICK_MS,
+    source: str = '[0:a]',
+    out_label: str = '[pre]',
+) -> str:
+    """
+    The whole episode's audio in one graph, ending in `out_label` (before any
+    loudnorm): mutes + bleeps on the SOURCE timeline, then the keep-list cuts,
+    then clean-up, then music ducked under the speech with sidechaincompress.
+    """
+    keep = [(int(s), int(e)) for s, e in keep if e > s]
+    if not keep:
+        raise ValueError('episode audio needs at least one keep segment')
+    mutes = [(int(s), int(e)) for s, e in (mutes or []) if e > s]
+    bleeps = [(int(s), int(e)) for s, e in (bleeps or []) if e > s]
+    n = len(keep)
+    parts: list[str] = []
+
+    # 1. source-timeline gating: muted ranges and the speech under every bleep go to zero
+    silenced = mutes + bleeps
+    head = f'{source}aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo'
+    if silenced:
+        head += ''.join(
+            f",volume=enable='between(t,{s / 1000:.3f},{e / 1000:.3f})':volume=0:eval=frame" for s, e in silenced
+        )
+    parts.append(f'{head}[speech_src]')
+    src = '[speech_src]'
+
+    # 2. the bleep tone itself: a 1 kHz sine at -14 dB, audible only inside the bleep ranges
+    if bleeps:
+        tone_ms = max(e for _, e in bleeps)
+        parts.append(
+            f'sine=frequency={BLEEP_HZ}:sample_rate=48000:duration={tone_ms / 1000:.3f},'
+            f'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,'
+            f'volume={BLEEP_DB}dB,'
+            f"volume=enable='not({_range_expr(bleeps)})':volume=0:eval=frame[tone]"
+        )
+        parts.append(f'{src}[tone]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[bleeped]')
+        src = '[bleeped]'
+
+    # 3. the cuts: atrim per keep segment + de-click ramps, then concat
+    if n > 1:
+        parts.append(f'{src}asplit={n}' + ''.join(f'[k{i}]' for i in range(n)))
+    for i, (start, end) in enumerate(keep):
+        length = (end - start) / 1000
+        fade_out_at = max(0.0, length - DECLICK_FADE_S)
+        piece_src = f'[k{i}]' if n > 1 else src
+        parts.append(
+            f'{piece_src}atrim=start={start / 1000:.3f}:end={end / 1000:.3f},asetpts=PTS-STARTPTS,'
+            f'afade=t=in:d={DECLICK_FADE_S},afade=t=out:st={fade_out_at:.3f}:d={DECLICK_FADE_S}[a{i}]'
+        )
+    if n > 1:
+        parts.append(''.join(f'[a{i}]' for i in range(n)) + f'concat=n={n}:v=0:a=1[cat]')
+        tail = '[cat]'
+    else:
+        tail = '[a0]'
+
+    # 4. clean-up chain (each stage is a spec flag)
+    chain = []
+    if noise_reduction:
+        chain.append('afftdn=nr=10:nf=-40')
+    if high_pass:
+        chain.append('highpass=f=80')
+    if compression:
+        chain.append('acompressor=threshold=0.126:ratio=2.5:attack=5:release=120')
+    if chain:
+        parts.append(f'{tail}{",".join(chain)}[clean]')
+        tail = '[clean]'
+
+    total_ms = sum(e - s for s, e in keep)
+
+    # 5. music under the speech, ducked by a sidechain fed from the speech itself
+    if music:
+        gain_db = float(music.get('gain_db', -22))
+        duck_db = abs(float(music.get('duck_db', -12)))
+        fade_ms = int(music.get('fade_ms', 1500))
+        ratio = max(2.0, min(20.0, round(duck_db / 1.5, 2)))
+        parts.append(f'{tail}asplit=2[spk][sc]')
+        music_fade_out = max(0.0, (total_ms - fade_ms) / 1000)
+        parts.append(
+            f'[{music_input}:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,'
+            f'aloop=loop=-1:size={total_ms * 48 + 48000},atrim=end={total_ms / 1000:.3f},asetpts=PTS-STARTPTS,'
+            f'volume={gain_db}dB,'
+            f'afade=t=in:d={fade_ms / 1000:.3f},afade=t=out:st={music_fade_out:.3f}:d={fade_ms / 1000:.3f}[mus]'
+        )
+        parts.append(
+            f'[mus][sc]sidechaincompress=threshold={DUCK_THRESHOLD}:ratio={ratio}:'
+            f'attack={DUCK_ATTACK_MS}:release={DUCK_RELEASE_MS}[duck]'
+        )
+        parts.append('[spk][duck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mixed]')
+        tail = '[mixed]'
+
+    # 6. programme fades
+    fade_out_at = max(0.0, (total_ms - fade_out_ms) / 1000)
+    parts.append(
+        f'{tail}afade=t=in:d={max(0, fade_in_ms) / 1000:.3f},'
+        f'afade=t=out:st={fade_out_at:.3f}:d={max(0, fade_out_ms) / 1000:.3f}{out_label}'
+    )
+    del source_duration_ms
+    return ';'.join(parts)
+
+
+def render_episode_audio(
+    src_media: str | Path,
+    keep: list[tuple[int, int]],
+    out_wav: str | Path,
+    *,
+    mutes: list[tuple[int, int]] | None = None,
+    bleeps: list[tuple[int, int]] | None = None,
+    noise_reduction: bool = True,
+    high_pass: bool = True,
+    compression: bool = True,
+    music_path: str | Path | None = None,
+    music: dict | None = None,
+    master: bool = True,
+    loudness_lufs: float = LOUDNESS_TARGET_LUFS,
+    channels: int = 2,
+) -> Path:
+    """
+    One full-length audio pass for an episode: cuts, mutes, bleeps, clean-up,
+    ducked music and (when `master`) the two-pass loudnorm to the target LUFS.
+    """
+    out_wav = Path(out_wav)
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    music_cfg = music if (music and music_path) else None
+    graph = episode_audio_graph(
+        keep, mutes, bleeps, noise_reduction=noise_reduction, high_pass=high_pass,
+        compression=compression, music=music_cfg, music_input=1,
+    )
+    inputs = ['-i', str(src_media)]
+    if music_cfg:
+        inputs += ['-i', str(music_path)]
+
+    tail = 'aresample=48000'
+    if master:
+        base = f'loudnorm=I={float(loudness_lufs)}:TP={TRUE_PEAK_DBTP}:LRA={LOUDNESS_RANGE_LU}'
+        measure = subprocess.run(
+            [ffmpeg_exe(), '-hide_banner', '-nostdin', *inputs,
+             '-filter_complex', f'{graph};[pre]{base}:print_format=json[out]', '-map', '[out]', '-f', 'null', '-'],
+            capture_output=True, text=True,
+        )
+        stats = _loudnorm_stats(measure.stderr)
+        second = base
+        if stats:
+            try:
+                second = (
+                    f'{base}:measured_I={stats["input_i"]}:measured_TP={stats["input_tp"]}'
+                    f':measured_LRA={stats["input_lra"]}:measured_thresh={stats["input_thresh"]}'
+                    f':offset={stats["target_offset"]}:linear=true'
+                )
+            except KeyError:
+                second = base
+        tail = f'{second},aresample=48000'
+
+    run_ffmpeg(['-y', *inputs, '-filter_complex', f'{graph};[pre]{tail}[out]', '-map', '[out]',
+                '-ar', '48000', '-ac', str(int(channels)), '-c:a', 'pcm_s16le', str(out_wav)])
+    return out_wav
+
+
+def assemble_episode_audio(pieces: list[dict], out_wav: str | Path, channels: int = 2) -> Path:
+    """
+    Join the mastered body with the intro/outro audio and the silent card gaps,
+    in the order the video parts are concatenated. `pieces` items are either
+    {'path': ...} or {'silence_ms': n}.
+    """
+    out_wav = Path(out_wav)
+    if len(pieces) == 1 and pieces[0].get('path'):
+        return Path(pieces[0]['path'])
+    inputs: list[str] = []
+    labels: list[str] = []
+    parts: list[str] = []
+    for i, piece in enumerate(pieces):
+        if piece.get('path'):
+            inputs += ['-i', str(piece['path'])]
+        else:
+            seconds = max(0.001, int(piece.get('silence_ms') or 0) / 1000)
+            inputs += ['-f', 'lavfi', '-t', f'{seconds:.3f}', '-i', 'anullsrc=r=48000:cl=stereo']
+        parts.append(f'[{i}:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,'
+                     f'asetpts=PTS-STARTPTS[p{i}]')
+        labels.append(f'[p{i}]')
+    parts.append(''.join(labels) + f'concat=n={len(labels)}:v=0:a=1[out]')
+    run_ffmpeg(['-y', *inputs, '-filter_complex', ';'.join(parts), '-map', '[out]',
+                '-ar', '48000', '-ac', str(int(channels)), '-c:a', 'pcm_s16le', str(out_wav)])
+    return out_wav
+
+
+def encode_audio_deliverable(src_wav: str | Path, out_path: str | Path) -> Path:
+    """episode.mp3 (192 kbps) / episode.wav (48 kHz 16-bit) from the finished audio."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    codec = ['-c:a', 'libmp3lame', '-b:a', '192k'] if out_path.suffix.lower() == '.mp3' else ['-c:a', 'pcm_s16le']
+    run_ffmpeg(['-y', '-i', str(src_wav), '-vn', '-ar', '48000', *codec, str(out_path)])
+    return out_path
+
+
+# -------------------------------------------------------------- episode video
+
+
+def plan_episode_parts(keep: list[tuple[int, int]], part_ms: int = EPISODE_PART_MS,
+                       min_part_ms: int = EPISODE_MIN_PART_MS) -> list[dict]:
+    """
+    Split the keep list into ~`part_ms` chunks of OUTPUT time. A keep segment
+    longer than a part is split inside itself (an exact source cut — the audio
+    is rendered separately in one pass, so nothing can drift).
+    """
+    keep = [(int(s), int(e)) for s, e in keep if e > s]
+    if not keep:
+        return []
+    part_ms = max(1000, int(part_ms))
+    chunks: list[list[tuple[int, int]]] = []
+    current: list[tuple[int, int]] = []
+    used = 0
+    for start, end in keep:
+        cursor = start
+        while cursor < end:
+            room = part_ms - used
+            if room <= 0:
+                chunks.append(current)
+                current, used, room = [], 0, part_ms
+            take = min(end - cursor, room)
+            if (end - cursor) - take < 200:      # never leave a sub-frame sliver behind
+                take = end - cursor
+            current.append((cursor, cursor + take))
+            used += take
+            cursor += take
+    if current:
+        chunks.append(current)
+    if len(chunks) > 1 and sum(e - s for s, e in chunks[-1]) < min_part_ms:
+        chunks[-2].extend(chunks.pop())
+    parts = []
+    out = 0
+    for i, segments in enumerate(chunks):
+        duration = sum(e - s for s, e in segments)
+        parts.append({'n': i + 1, 'keep': [[s, e] for s, e in segments], 'out_start_ms': out,
+                      'out_end_ms': out + duration, 'duration_ms': duration})
+        out += duration
+    return parts
+
+
+def spec_hash(spec: dict, exclude: tuple[str, ...] = ('range', 'quality', 'prepared_at', 'warnings')) -> str:
+    """
+    Identity of a render: the prepared spec minus the fields that do not change
+    the picture (the requested range, the quality preset, timestamps). A part
+    already on disk under the same hash is reused on a re-run.
+    """
+    import hashlib
+
+    trimmed = {k: v for k, v in (spec or {}).items() if k not in exclude}
+    blob = json.dumps(trimmed, sort_keys=True, separators=(',', ':'), default=str)
+    return hashlib.sha256(blob.encode('utf-8')).hexdigest()[:16]
+
+
+def reframe_chain(out_w: int, out_h: int, fit: str = 'fit', background: str = 'blur') -> list[str]:
+    """
+    Aspect conversion as a list of graph statements taking [rf_in] to [rf_out]:
+    `fill` crops to cover, `fit` letterboxes on a blurred copy or a flat colour.
+    Always ends in setsar=1 so concat accepts every piece.
+    """
+    if str(fit).lower() == 'fill':
+        return [f'[rf_in]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,'
+                f'crop={out_w}:{out_h},setsar=1[rf_out]']
+    if str(background or 'blur').lower() == 'blur':
+        return [
+            '[rf_in]split[rf_fg][rf_bg]',
+            f'[rf_bg]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},'
+            f'gblur=sigma=30,eq=brightness=-0.08[rf_bgo]',
+            f'[rf_fg]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease[rf_fgo]',
+            '[rf_bgo][rf_fgo]overlay=(W-w)/2:(H-h)/2,setsar=1[rf_out]',
+        ]
+    colour = str(background or 'black')
+    if colour.startswith('#'):
+        colour = '0x' + colour[1:]
+    return [f'[rf_in]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,'
+            f'pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:color={colour},setsar=1[rf_out]']
+
+
+def logo_chain(logo: dict, out_w: int, out_h: int, logo_input: int, video_label: str, out_label: str) -> list[str]:
+    """A watermark scaled to a fraction of the frame height, in one of the four corners."""
+    height = max(8, int(round(out_h * float(logo.get('height', 0.10) or 0.10))))
+    opacity = max(0.0, min(1.0, float(logo.get('opacity', 1.0) if logo.get('opacity') is not None else 1.0)))
+    margin = max(8, int(round(out_h * 0.04)))
+    corner = str(logo.get('corner') or 'tr').lower()
+    x = f'W-w-{margin}' if corner in ('tr', 'br') else f'{margin}'
+    y = f'H-h-{margin}' if corner in ('bl', 'br') else f'{margin}'
+    return [
+        f'[{logo_input}:v]scale=-1:{height},format=rgba,colorchannelmixer=aa={opacity:.3f}[lg]',
+        f'{video_label}[lg]overlay={x}:{y}:format=auto:shortest=1{out_label}',
+    ]
+
+
+def episode_part_graph(
+    segments_ms: list[tuple[int, int]],
+    out_w: int,
+    out_h: int,
+    fps: int,
+    *,
+    fit: str = 'fit',
+    background: str = 'blur',
+    ass_path: str | Path | None = None,
+    logo: dict | None = None,
+    logo_input: int = 1,
+    base_ms: int = 0,
+) -> str:
+    """
+    One resumable part of the episode: its keep slices trimmed out of the
+    (already seeked) decode, concatenated, reframed to the output aspect, the
+    logo overlaid and the captions burned in. Ends in [vout].
+    """
+    frame_ms = 1000 / max(1, fps)
+    usable = [(int(s) - int(base_ms), int(e) - int(base_ms)) for s, e in segments_ms if e - s >= frame_ms]
+    if not usable:
+        raise ValueError('No keep slice in this part is long enough to hold a video frame')
+    n = len(usable)
+    parts = [f'[0:v]fps={fps},setpts=PTS-STARTPTS,split={n}' + ''.join(f'[b{i}]' for i in range(n))]
+    for i, (start, end) in enumerate(usable):
+        parts.append(f'[b{i}]trim=start={start / 1000:.3f}:end={end / 1000:.3f},setpts=PTS-STARTPTS,'
+                     f'fps={fps},setsar=1[v{i}]')
+    if n > 1:
+        parts.append(''.join(f'[v{i}]' for i in range(n)) + f'concat=n={n}:v=1:a=0[joined]')
+        tail = '[joined]'
+    else:
+        tail = '[v0]'
+    parts.append(f'{tail}null[rf_in]')
+    parts.extend(reframe_chain(out_w, out_h, fit, background))
+    tail = '[rf_out]'
+    if logo:
+        parts.extend(logo_chain(logo, out_w, out_h, logo_input, tail, '[logoed]'))
+        tail = '[logoed]'
+    if ass_path:
+        parts.append(f"{tail}subtitles='{_escape_filter_path(ass_path)}'[captioned]")
+        tail = '[captioned]'
+    parts.append(f'{tail}format=yuv420p[vout]')
+    return ';'.join(parts)
+
+
+def render_episode_part(
+    video_path: str | Path,
+    segments_ms: list[tuple[int, int]],
+    out_path: str | Path,
+    out_w: int,
+    out_h: int,
+    *,
+    fps: int = 30,
+    crf: int = 20,
+    preset: str = 'veryfast',
+    fit: str = 'fit',
+    background: str = 'blur',
+    ass_path: str | Path | None = None,
+    logo: dict | None = None,
+    logo_path: str | Path | None = None,
+) -> Path:
+    """Encode one video-only part (captions burned in; the audio is a separate pass)."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    base = int(min(s for s, _ in segments_ms))
+    last = int(max(e for _, e in segments_ms))
+    use_logo = logo if (logo and logo_path) else None
+    graph = episode_part_graph(segments_ms, out_w, out_h, fps, fit=fit, background=background,
+                               ass_path=ass_path, logo=use_logo, logo_input=1, base_ms=base)
+    inputs = ['-ss', f'{base / 1000:.3f}', '-t', f'{(last - base) / 1000:.3f}', '-i', str(video_path)]
+    if use_logo:
+        # a looped still never ends on its own: bound it and let overlay finish with the picture
+        inputs += ['-loop', '1', '-framerate', str(fps), '-t', f'{(last - base) / 1000:.3f}', '-i', str(logo_path)]
+    run_ffmpeg(['-y', *inputs, '-filter_complex', graph, '-map', '[vout]', '-an',
+                '-c:v', 'libx264', '-preset', preset, '-crf', str(crf), '-r', str(fps),
+                '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(out_path)])
+    return out_path
+
+
+def _escape_drawtext(text: str) -> str:
+    out = str(text or '').replace('\\', '\\\\')
+    for ch in (':', "'", '%'):
+        out = out.replace(ch, '\\' + ch)
+    return out
+
+
+def card_graph(text: str, subtitle: str, out_w: int, out_h: int, font: str | None = None,
+               colour: str = 'white') -> str:
+    """drawtext over a flat colour source: the title / end card."""
+    font_arg = f":fontfile='{_escape_filter_path(font)}'" if font else ''
+    size = max(24, int(out_h * 0.075))
+    sub_size = max(18, int(out_h * 0.040))
+    parts = [f"[0:v]drawtext=text='{_escape_drawtext(text)}':fontcolor={colour}:fontsize={size}"
+             f"{font_arg}:x=(w-text_w)/2:y=(h-text_h)/2-{int(out_h * 0.03)}[t1]"]
+    tail = '[t1]'
+    if subtitle:
+        parts.append(f"{tail}drawtext=text='{_escape_drawtext(subtitle)}':fontcolor=0xBBBBBB:fontsize={sub_size}"
+                     f"{font_arg}:x=(w-text_w)/2:y=(h+text_h)/2+{int(out_h * 0.05)}[t2]")
+        tail = '[t2]'
+    parts.append(f'{tail}setsar=1,format=yuv420p[vout]')
+    return ';'.join(parts)
+
+
+def render_card(text: str, subtitle: str, seconds: float, out_path: str | Path, out_w: int, out_h: int,
+                fps: int = 30, crf: int = 20, preset: str = 'veryfast', background: str = '0x111111') -> Path:
+    """A silent title / end card part, generated with lavfi (no assets needed)."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    seconds = max(0.5, float(seconds or 3))
+    source = f'color=c={background}:s={out_w}x{out_h}:r={fps}:d={seconds:.3f}'
+    encode = ['-c:v', 'libx264', '-preset', preset, '-crf', str(crf), '-r', str(fps),
+              '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(out_path)]
+    graph = card_graph(text, subtitle, out_w, out_h, card_font_file())
+    try:
+        run_ffmpeg(['-y', '-f', 'lavfi', '-i', source, '-filter_complex', graph, '-map', '[vout]', '-an',
+                    '-t', f'{seconds:.3f}', *encode])
+    except RuntimeError:
+        # a build without drawtext (no libfreetype) still gets the timing right
+        run_ffmpeg(['-y', '-f', 'lavfi', '-i', source, '-vf', 'setsar=1,format=yuv420p', '-an',
+                    '-t', f'{seconds:.3f}', *encode])
+    return out_path
+
+
+def render_asset_part(asset_path: str | Path, out_path: str | Path, out_w: int, out_h: int,
+                      fps: int = 30, crf: int = 20, preset: str = 'veryfast',
+                      fit: str = 'fit', background: str = 'blur') -> Path:
+    """An intro / outro clip conformed to the episode's geometry (video only, SAR 1)."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    parts = [f'[0:v]fps={fps},setpts=PTS-STARTPTS,null[rf_in]']
+    parts.extend(reframe_chain(out_w, out_h, fit, background))
+    parts.append('[rf_out]format=yuv420p[vout]')
+    run_ffmpeg(['-y', '-i', str(asset_path), '-filter_complex', ';'.join(parts), '-map', '[vout]', '-an',
+                '-c:v', 'libx264', '-preset', preset, '-crf', str(crf), '-r', str(fps),
+                '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(out_path)])
+    return out_path
+
+
+def extract_audio(src: str | Path, out_wav: str | Path) -> Path:
+    """48 kHz stereo PCM of an asset's audio (silence when it has none)."""
+    out_wav = Path(out_wav)
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    run_ffmpeg(['-y', '-i', str(src), '-vn', '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le', str(out_wav)])
+    return out_wav
+
+
+def concat_parts(paths: list[str | Path], out_path: str | Path, work: Path) -> Path:
+    """
+    Join the encoded parts with the concat demuxer (stream copy — every part was
+    encoded with the same settings). Falls back to a re-encode if copy fails.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if len(paths) == 1:
+        shutil_copy(paths[0], out_path)
+        return out_path
+    listing = Path(work) / 'parts.txt'
+    listing.write_text('\n'.join(f"file '{Path(p).as_posix()}'" for p in paths) + '\n', encoding='utf-8')
+    try:
+        run_ffmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', str(listing), '-c', 'copy',
+                    '-movflags', '+faststart', str(out_path)])
+    except RuntimeError:
+        run_ffmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', str(listing), '-c:v', 'libx264',
+                    '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+                    '-movflags', '+faststart', str(out_path)])
+    return out_path
+
+
+def shutil_copy(src: str | Path, dst: str | Path) -> Path:
+    import shutil
+
+    shutil.copyfile(str(src), str(dst))
+    return Path(dst)
+
+
+def mux_episode(video_path: str | Path, audio_path: str | Path, out_path: str | Path,
+                audio_bitrate: str = '192k') -> Path:
+    """Final mux: the concatenated picture + the one-pass mastered audio."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    run_ffmpeg(['-y', '-i', str(video_path), '-i', str(audio_path), '-map', '0:v:0', '-map', '1:a:0',
+                '-c:v', 'copy', '-c:a', 'aac', '-b:a', audio_bitrate, '-movflags', '+faststart',
+                '-shortest', str(out_path)])
+    return out_path
+
+
+def transcode_aspect(src_path: str | Path, out_path: str | Path, out_w: int, out_h: int,
+                     fps: int = 30, crf: int = 20, preset: str = 'veryfast',
+                     fit: str = 'fit', background: str = 'blur', audio_bitrate: str = '192k') -> Path:
+    """An extra aspect of a finished episode (same audio, reframed picture)."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    parts = ['[0:v]null[rf_in]']
+    parts.extend(reframe_chain(out_w, out_h, fit, background))
+    parts.append('[rf_out]format=yuv420p[vout]')
+    run_ffmpeg(['-y', '-i', str(src_path), '-filter_complex', ';'.join(parts), '-map', '[vout]', '-map', '0:a?',
+                '-c:v', 'libx264', '-preset', preset, '-crf', str(crf), '-r', str(fps),
+                '-c:a', 'aac', '-b:a', audio_bitrate, '-movflags', '+faststart', str(out_path)])
+    return out_path
+
+
+# ------------------------------------------------------------------ chapters
+
+
+def ffmetadata_chapters(chapters: list[dict], total_ms: int, title: str | None = None) -> str:
+    """
+    ;FFMETADATA1 chapter list (TIMEBASE 1/1000) — the file podcast hosts and
+    `ffmpeg -i chapters.txt` accept.
+    """
+    def esc(text: str) -> str:
+        out = str(text or '')
+        for ch in ('\\', '=', ';', '#'):
+            out = out.replace(ch, '\\' + ch)
+        return out.replace('\n', ' ')
+
+    lines = [';FFMETADATA1']
+    if title:
+        lines.append(f'title={esc(title)}')
+    marks = sorted(({'title': c.get('title') or f'Chapter {i + 1}', 'out_ms': max(0, int(c.get('out_ms') or 0))}
+                    for i, c in enumerate(chapters or [])), key=lambda c: c['out_ms'])
+    for i, mark in enumerate(marks):
+        end = marks[i + 1]['out_ms'] if i + 1 < len(marks) else max(int(total_ms), mark['out_ms'] + 1)
+        if end <= mark['out_ms']:
+            continue
+        lines += ['', '[CHAPTER]', 'TIMEBASE=1/1000', f'START={mark["out_ms"]}', f'END={end}',
+                  f'title={esc(mark["title"])}']
+    return '\n'.join(lines) + '\n'
+
+
+def chapters_payload(chapters: list[dict], total_ms: int) -> dict:
+    """chapters.json — the same marks with end times and hh:mm:ss labels."""
+    marks = sorted(({'title': c.get('title') or f'Chapter {i + 1}', 'start_ms': max(0, int(c.get('out_ms') or 0))}
+                    for i, c in enumerate(chapters or [])), key=lambda c: c['start_ms'])
+    out = []
+    for i, mark in enumerate(marks):
+        end = marks[i + 1]['start_ms'] if i + 1 < len(marks) else max(int(total_ms), mark['start_ms'])
+        out.append({'title': mark['title'], 'start_ms': mark['start_ms'], 'end_ms': end,
+                    'start': _hhmmss(mark['start_ms'])})
+    return {'schema_version': 1, 'duration_ms': int(total_ms), 'chapters': out}
+
+
+def _hhmmss(ms: int) -> str:
+    s = max(0, int(ms)) // 1000
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f'{h:02d}:{m:02d}:{sec:02d}'
+
+
+# ------------------------------------------------------- caption restyling
+
+
+_ASS_ALIGNMENT = {'bottom': 2, 'middle': 5, 'center': 5, 'top': 8}
+
+
+def _ass_colour(value: str | None) -> str | None:
+    """#RRGGBB -> &H00BBGGRR (ASS colours are ABGR)."""
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip().lstrip('#')
+    if len(text) != 6:
+        return None
+    try:
+        r, g, b = text[0:2], text[2:4], text[4:6]
+        int(text, 16)
+    except ValueError:
+        return None
+    return f'&H00{b}{g}{r}'.upper().replace('&H00', '&H00')
+
+
+def restyle_ass(ass_text: str, style: dict | None) -> str:
+    """
+    Apply the studio's caption controls to a built ASS script without touching
+    the caption builder: font, size, colour, position, karaoke on/off and
+    per-speaker colours (a \\c override in front of each line).
+    """
+    style = style or {}
+    lines = ass_text.splitlines()
+    out = []
+    for line in lines:
+        if line.startswith('Style: Default,'):
+            fields = line[len('Style: '):].split(',')
+            if style.get('font'):
+                fields[1] = str(style['font'])
+            if style.get('size'):
+                try:
+                    fields[2] = str(int(style['size']))
+                except (TypeError, ValueError):
+                    pass
+            colour = _ass_colour(style.get('color'))
+            if colour:
+                fields[3] = colour
+            align = _ASS_ALIGNMENT.get(str(style.get('position') or 'bottom').lower())
+            if align:
+                fields[18] = str(align)
+                if align == 8:
+                    fields[21] = str(max(40, int(fields[21]) // 4))
+            out.append('Style: ' + ','.join(fields))
+            continue
+        if line.startswith('Dialogue:'):
+            if style.get('karaoke') is False:
+                line = re.sub(r'\{\\k\d+\}', '', line)
+            out.append(line)
+            continue
+        out.append(line)
+    return '\n'.join(out) + '\n'
+
+
+def colour_dialogue(ass_text: str, colours: list[str | None]) -> str:
+    """Per-line primary colour (per-speaker captions): one entry per Dialogue line."""
+    out, index = [], 0
+    for line in ass_text.splitlines():
+        if line.startswith('Dialogue:'):
+            colour = _ass_colour(colours[index]) if index < len(colours) else None
+            index += 1
+            if colour:
+                head, _, text = line.partition(',,0,0,0,,')
+                if _:
+                    line = f'{head},,0,0,0,,{{\\c{colour}}}{text}'
+        out.append(line)
+    return '\n'.join(out) + '\n'
+
+
+def conform_audio(src: str | Path, out_wav: str | Path, duration_ms: int) -> Path:
+    """An asset's audio padded/trimmed to exactly its rendered part's length."""
+    out_wav = Path(out_wav)
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    seconds = max(0.001, int(duration_ms) / 1000)
+    run_ffmpeg(['-y', '-i', str(src), '-vn', '-af', 'apad', '-t', f'{seconds:.3f}',
+                '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le', str(out_wav)])
+    return out_wav

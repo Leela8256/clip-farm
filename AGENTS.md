@@ -101,6 +101,24 @@ shared with `tools/prompts.py`) so the pipelines stay stock all the way to the L
   that is not exactly the output aspect with its own pixel aspect, and `concat` rejects inputs
   whose SARs differ (it only bites when a plan mixes crop sizes — solo close-ups + stacked panels).
 
+### Podcast Editing Studio (full-episode editor)
+
+- The studio is instructions-only: the browser owns `edits/episode-edits.json` (schema 1, integer ms,
+  ops cut/mute/bleep/shorten_silence with `enabled` for restore; speakers, sections, assets, audio/visual
+  settings; snapshots in `edits/versions/NNN.json`). Nodes read it, never write it.
+- `podcast_prepare_clip` branches on the `studio:` context key: `init` aligns the whole episode in ~60 s
+  pieces and writes `analysis/studio/{timeline,waveform,suggestions}.json` (suggestions are deterministic,
+  nested natural ⊆ balanced ⊆ tight, never auto-applied); `preview|export` turns the edits into
+  `analysis/studio/prepared-v<version>.json` (keep/mutes/bleeps, source↔output map, captions on the output
+  timeline, chapters, verified assets). The clip flow (no `studio:` key) is untouched.
+- `podcast_render` routes on `spec.studio` BEFORE the clip check (the studio spec carries `clip_id` too),
+  takes mode from `spec.mode`/`spec.studio` (never the node config), and renders: rough (640px whole episode),
+  range (slice with full mastering), export (`exports/studio/v<version>/`: 1080p mp4 + extra aspects +
+  mp3/wav + srt/vtt + ffmetadata & json chapters + report; resumable ~5 min parts keyed by a spec hash;
+  intro/title card/body/end card/outro concat; music ducked with sidechaincompress; bleep = 1 kHz sine).
+- Caption groups in the spec are line dicts `{start_ms, end_ms, text, speaker, words:[{w,s,e}]}` — renderer
+  and clients must accept that shape (and the flat word list) — see `_studio_captions`.
+
 ## File map
 
 ```
@@ -110,6 +128,9 @@ shared with `tools/prompts.py`) so the pipelines stay stock all the way to the L
 .rocketride/director-chat.pipe       chat → llm_anthropic → response_answers (parse, revise)
 .rocketride/prompt-director.pipe     chat → embedding_transformer → qdrant → llm_anthropic → podcast_refine → response_answers
 .rocketride/prompt-director-full.pipe chat → llm_anthropic → podcast_refine → response_answers (no index)
+.rocketride/podcast-studio-prepare.pipe   chat → podcast_prepare_clip (studio: init | spec) → response_answers
+.rocketride/podcast-studio-preview.pipe   chat → podcast_prepare_clip → podcast_render (rough/range) → response_answers
+.rocketride/podcast-studio-export.pipe    chat → podcast_prepare_clip → podcast_render (episode export) → response_answers
 .rocketride/visual-scan.pipe         chat → podcast_ingest → frame_grabber → pose_estimation → podcast_visual → response_answers
 .rocketride/clip-preview.pipe        chat → podcast_prepare_clip → (frame_grabber → pose_estimation) → podcast_layout → podcast_render[preview] → response_answers
 .rocketride/clip-export.pipe         chat → podcast_prepare_clip → (frame_grabber → pose_estimation) → podcast_layout → podcast_render[export] → response_answers
@@ -119,9 +140,12 @@ local_nodes/tests/                   python -m unittest discover -s local_nodes/
 frontend/app/layout.tsx              shell: sidebar navigation (New episode · Clip Studio · History), toasts
 frontend/app/page.tsx                home: upload only
 frontend/app/history/page.tsx        history of runs (live status, search, sort)
+frontend/app/studio/page.tsx         Podcast Studio (/studio?id=…): transcript-first full-episode editor
+frontend/components/studio/          StudioCanvas · TranscriptEditor · TimelineBar · Inspector · SuggestionsPanel · helpers
 frontend/app/episode/page.tsx        Clip Studio (/episode?id=…): map, Direct / Moments / Transcript tabs, sticky preview column, keyboard (R, [, ], Space, Esc)
 frontend/components/shell/           Sidebar (owns the connection + retry) · Toasts (`toast()`)
 frontend/components/history/         RunRow · RunThumb · HistorySkeleton
+frontend/lib/studio.ts + studio-engine.ts  episode-edit model (undo/redo, suggestions, map) + studio SDK calls
 frontend/components/podcast/         NewEpisodeForm · StatusTimeline · PromptDirector · ChapterStrip · CandidateCard · ClipWorkbench · SoundTools · ComplianceBadges · TranscriptPanel
 frontend/lib/engine.ts               connection, store helpers, pipeline runs (analysis, index, visual scan, search, parse, director, revise, clips)
 frontend/lib/podcast.ts              types, manifest/report normalisation, status text, formatting

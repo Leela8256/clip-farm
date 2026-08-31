@@ -167,6 +167,10 @@ local_nodes/
   podcast_render/       plan → preview or export files (+ report, measured duration, layout summary)
   tests/                unit tests for the pure logic (python -m unittest)
 frontend/               static site (next build → out/), served by nginx in Docker
+                        + the Podcast Studio (/studio): edit the whole episode by its transcript —
+                        cut/mute/bleep from text, reviewable cleanup suggestions, audio finishing,
+                        branding (intro/outro/music/logo/cards), captions, chapters; export
+                        1080p MP4 + MP3/WAV + SRT/VTT + chapters from three studio pipelines
   app/layout.tsx        the shell: left navigation (New episode · Clip Studio · History · recent episodes · online dot) + toasts
   app/page.tsx          home: title, subtitle, one upload drop zone
   app/history/page.tsx  every run with live status, search and sort
