@@ -160,8 +160,8 @@
           "size": 960,
           "layouts": "vertical",
           "fps": 30,
-          "crf": 28,
-          "preset": "ultrafast",
+          "crf": 23,
+          "preset": "veryfast",
           "captions": true,
           "sidecars": false
         },

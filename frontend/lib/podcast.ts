@@ -5,6 +5,7 @@
  */
 
 import type { Compliance, EditVersion } from "./director";
+import type { CaptionStyle, ResolvedBrand } from "./brand";
 
 export type PipeKind = "analysis" | "preview" | "export" | "chat" | "director" | "director-full" | "index" | "search" | "visual";
 
@@ -78,6 +79,12 @@ export interface ProjectClip {
 export interface Project {
   episode_id: string;
   title?: string;
+  /** phase 3: the name the producer gave it (the file name is what it falls back to) */
+  display_title?: string;
+  /** phase 3: put away in the library — hidden unless the producer asks for archived ones */
+  archived?: boolean;
+  /** phase 3: the id of the brand look its clips start from */
+  brand_template?: string;
   source: string;
   created?: number;
   updated?: number;
@@ -161,6 +168,12 @@ export interface ClipEdit {
   layout_mode?: string;
   /** phase 2: the tracked person to follow (p1, p2, …) */
   subject?: string | null;
+  /** phase 3: the shape the vertical render is made in — 9:16 (default), 4:5, 1:1 */
+  aspect?: string;
+  /** phase 3: the caption look as an object (string presets keep working through `captions`) */
+  caption_style?: CaptionStyle;
+  /** phase 3: the brand snapshot the render must use (never a reference to a template) */
+  brand?: ResolvedBrand;
   versions?: EditVersion[];
   active_version?: number | null;
 }
@@ -194,6 +207,9 @@ export interface RenderReport {
   loudness?: Loudness | null;
   compliance?: Compliance | null;
   layout?: LayoutSummary | null;
+  /** Measured render quality block (tier, dimensions, fps, crf …). */
+  quality?: Record<string, unknown> | null;
+  cached?: boolean;
   version?: number | null;
   rendered_at: number;
   seconds: number;
@@ -409,6 +425,8 @@ export function toReport(raw: unknown): RenderReport {
       : null,
     compliance: r.compliance && typeof r.compliance === "object" ? (r.compliance as Compliance) : null,
     layout: toLayoutSummary(r.layout),
+    quality: r.quality && typeof r.quality === "object" ? (r.quality as Record<string, unknown>) : null,
+    cached: r.cached === true,
     version: typeof r.version === "number" ? r.version : null,
     rendered_at: num(r.rendered_at),
     seconds: num(r.seconds),

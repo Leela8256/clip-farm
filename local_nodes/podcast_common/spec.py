@@ -23,7 +23,8 @@ FILLER_POLICIES = ('smart', 'cut', 'mute', 'keep')
 SILENCE_POLICIES = ('tighten', 'keep')
 ASPECT_RATIOS = ('9:16', '16:9', '1:1', '4:5')
 # Phase 1 renders these; the others are accepted with a warning and fall back to 9:16.
-RENDERABLE_ASPECTS = {'9:16': 'vertical', '16:9': 'wide'}
+# The shapes a clip can really be rendered in, and the render pass each one uses.
+RENDERABLE_ASPECTS = {'9:16': 'vertical', '4:5': 'vertical', '1:1': 'vertical', '16:9': 'wide'}
 CAPTION_PRESETS = ('classic', 'yellow-bold', 'white-outline', 'minimal', 'off')
 EXCLUDABLE_CONTENT = ('profanity', 'sponsor', 'housekeeping', 'names', 'numbers')
 
@@ -184,7 +185,7 @@ def normalize_spec(raw: Any, defaults: dict | None = None) -> dict:
                      {'vertical': '9:16', 'portrait': '9:16', 'reels': '9:16', 'shorts': '9:16', 'tiktok': '9:16',
                       'horizontal': '16:9', 'landscape': '16:9', 'wide': '16:9', 'youtube': '16:9', 'square': '1:1'})
     if aspect not in RENDERABLE_ASPECTS:
-        warnings.append(f'{aspect} exports arrive with Brand Studio (phase 3) — rendering 9:16 for now.')
+        warnings.append(f'{aspect} is not a shape clips can be delivered in yet — rendering 9:16 instead.')
     caption_raw = data.get('caption_preset', data.get('captions'))
     if isinstance(caption_raw, dict):
         caption_raw = caption_raw.get('preset') or caption_raw.get('style') or ('off' if caption_raw.get('enabled') is False else None)

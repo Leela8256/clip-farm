@@ -150,8 +150,13 @@ export async function runStudioInit(episodeId: string, onProgress?: ProgressHand
 export interface PreviewOptions {
   /** [start, end] on the finished-episode timeline, for a close look at one stretch. */
   range?: [number, number];
-  /** "rough" = the whole episode, quickly; "full" = the real thing for the chosen stretch. */
-  quality: "rough" | "full";
+  /**
+   * How good the preview has to be. "standard" = the whole episode at a
+   * watchable size; "range" = the chosen stretch as it will really sound and
+   * look. The older names keep working: "rough" is the whole episode (an alias
+   * of standard) and "full" is the chosen stretch.
+   */
+  quality: "rough" | "full" | "standard" | "range";
 }
 
 /** Build a preview of the episode as edited. */
@@ -165,9 +170,21 @@ export async function runStudioPreview(episodeId: string, options: PreviewOption
   return toStudioReport(pickManifest(result) ?? {});
 }
 
-/** Render the finished episode: video, audio, captions, chapters and the summary. */
-export async function runStudioExport(episodeId: string, onProgress?: ProgressHandler): Promise<StudioReport> {
-  const result = await runStudioQuestion("studio-export", [`project: ${projectRoot(episodeId)}`, "studio: export"], "export the episode", onProgress);
+/** How big the finished episode is made: 720p, 1080p, or as big as the recording is. */
+export interface ExportOptions {
+  size?: "720" | "1080" | "source";
+}
+
+/**
+ * Render the finished episode: video, audio, captions, chapters and the
+ * summary. `options.size` asks for the picture size (1080 when nothing is
+ * said); it travels as its own context line so an older engine simply ignores
+ * it.
+ */
+export async function runStudioExport(episodeId: string, onProgress?: ProgressHandler, options?: ExportOptions): Promise<StudioReport> {
+  const context = [`project: ${projectRoot(episodeId)}`, "studio: export"];
+  if (options?.size) context.push(`size: ${options.size}`);
+  const result = await runStudioQuestion("studio-export", context, "export the episode", onProgress);
   return toStudioReport(pickManifest(result) ?? {});
 }
 

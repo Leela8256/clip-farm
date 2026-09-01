@@ -288,6 +288,27 @@ export async function listDir(path: string): Promise<DirEntry[]> {
   }
 }
 
+/** A listing that says WHY it came back empty (the fail-closed twin of listDir). */
+export type StrictList = { ok: true; entries: DirEntry[] } | { ok: false; missing: boolean; error: string };
+
+/**
+ * List a folder without pretending a broken connection is an empty account.
+ * `listDir` cannot tell "nothing there" from "could not ask", and a library
+ * that shows "no projects" on a dropped socket invites the producer to start
+ * again from scratch. Missing is only reported when the folder really is gone.
+ */
+export async function listDirStrict(path: string): Promise<StrictList> {
+  try {
+    const listing = (await withClient((c) => c.fsListDir(path))) as { entries?: DirEntry[] };
+    return { ok: true, entries: listing?.entries ?? [] };
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    if (isConnectionError(error) || error === CONNECTION_LOST_MESSAGE) return { ok: false, missing: false, error };
+    const present = await exists(path);
+    return { ok: false, missing: !present, error };
+  }
+}
+
 export async function deleteFile(path: string): Promise<void> {
   await withClient((c) => c.fsDelete(path));
 }
@@ -488,6 +509,10 @@ export interface ClipRequest {
   /** caption preset name, or "off" */
   captions?: string;
   layouts?: string;
+  /** output shape for the vertical render: 9:16 (default) | 4:5 | 1:1 */
+  aspect?: string;
+  /** full caption style object — sent as JSON for renders that have no saved edit */
+  caption_style?: object;
   version?: number | null;
 }
 
@@ -499,6 +524,8 @@ export async function runClip(kind: "preview" | "export", episodeId: string, req
   if (req.title) context.push(`title: ${req.title.replace(/\n/g, " ")}`);
   if (req.captions) context.push(`captions: ${req.captions}`);
   if (req.layouts) context.push(`layouts: ${req.layouts}`);
+  if (req.aspect) context.push(`aspect: ${req.aspect}`);
+  if (req.caption_style) context.push(`caption_style: ${JSON.stringify(req.caption_style).replace(/\n/g, ' ')}`);
   if (req.version != null) context.push(`version: ${req.version}`);
   const result = await runQuestion(kind, context, `${kind} ${req.clipId}`, onProgress);
   return toReport(pickManifest(result) ?? {});
@@ -600,12 +627,21 @@ export interface SearchHit {
   start_ms: number;
   end_ms: number;
   passage: number;
+  /** which episode the passage came from (the index stores it as objectId) — "" when the store did not say */
+  episode_id: string;
 }
 
-/** Semantic search over the episode's transcript passages (transcript-search pipe: stock nodes only). */
-export async function runSearch(episodeId: string, query: string, limit = 6): Promise<SearchHit[]> {
+/**
+ * Semantic search over transcript passages (transcript-search pipe: stock
+ * nodes only). One episode, or several at once — the filter takes a list, and
+ * every hit says which episode it came from, so a search across the library
+ * can group its answers.
+ */
+export async function runSearch(episode: string | string[], query: string, limit = 6): Promise<SearchHit[]> {
+  const ids = (Array.isArray(episode) ? episode : [episode]).filter(Boolean);
+  if (!ids.length) return [];
   const q = newQuestion();
-  q.filter.objectIds = [episodeId];
+  q.filter.objectIds = ids;
   q.filter.limit = limit;
   q.addQuestion(query);
   const result = (await runPrepared("search", q)) as { documents?: unknown[] };
@@ -613,12 +649,14 @@ export async function runSearch(episodeId: string, query: string, limit = 6): Pr
   return docs.map((raw) => {
     const d = (raw ?? {}) as Record<string, unknown>;
     const md = (d.metadata ?? {}) as Record<string, unknown>;
+    const from = typeof md.episode_id === "string" ? md.episode_id : typeof md.objectId === "string" ? md.objectId : "";
     return {
       score: typeof d.score === "number" ? d.score : 0,
       text: String(d.page_content ?? ""),
       start_ms: typeof md.start_ms === "number" ? md.start_ms : 0,
       end_ms: typeof md.end_ms === "number" ? md.end_ms : 0,
       passage: typeof md.chunkId === "number" ? md.chunkId : 0,
+      episode_id: from || (ids.length === 1 ? ids[0] : ""),
     };
   });
 }
@@ -766,4 +804,173 @@ export function startRun<T>(key: string, kind: PipeKind, job: (onProgress: Progr
       notify(key);
     });
   return key;
+}
+
+// ----------------------------------------------------------- queued writes
+
+/**
+ * A one-at-a-time writer for any file the screen keeps changing (clip edits,
+ * brand templates, collections, batch state). It is the studio's save queue
+ * (lib/studio-engine) generalised to a plain path + value, kept beside it
+ * rather than inside it so the studio's own record-shaped queue is untouched.
+ *
+ * Per key: one write in the air at a time, further changes collapse into a
+ * single pending write of the NEWEST value, writes land in the order they were
+ * asked for, and each key runs on its own — a slow template save never holds
+ * up a clip edit.
+ */
+export interface QueuedSaveState {
+  saving: boolean;
+  /** a newer value is waiting for the current write to finish */
+  queued: boolean;
+  savedAt: number | null;
+  error: string | null;
+}
+
+type JsonWriter = (path: string, value: unknown) => Promise<void>;
+
+let queuedWriter: JsonWriter = writeJson;
+
+/** Test seam: swap the file writer behind saveJsonQueued (null puts the real one back). */
+export function setQueuedWriter(fn: JsonWriter | null): void {
+  queuedWriter = fn ?? writeJson;
+}
+
+interface QueuedJob {
+  path: string;
+  value: unknown;
+  waiting: { resolve: () => void; reject: (error: unknown) => void }[];
+}
+
+const QUEUE_IDLE: QueuedSaveState = { saving: false, queued: false, savedAt: null, error: null };
+
+const queueStates = new Map<string, QueuedSaveState>();
+const queueListeners = new Map<string, Set<() => void>>();
+const queuePending = new Map<string, QueuedJob>();
+const queueRunning = new Set<string>();
+
+export const getQueuedSaveState = (queueKey: string): QueuedSaveState => queueStates.get(queueKey) ?? QUEUE_IDLE;
+
+export function subscribeQueuedSave(queueKey: string, fn: () => void): () => void {
+  let set = queueListeners.get(queueKey);
+  if (!set) {
+    set = new Set();
+    queueListeners.set(queueKey, set);
+  }
+  set.add(fn);
+  return () => {
+    set?.delete(fn);
+  };
+}
+
+function patchQueueState(queueKey: string, patch: Partial<QueuedSaveState>): void {
+  queueStates.set(queueKey, { ...getQueuedSaveState(queueKey), ...patch });
+  queueListeners.get(queueKey)?.forEach((fn) => fn());
+}
+
+async function drainQueue(queueKey: string): Promise<void> {
+  if (queueRunning.has(queueKey)) return;
+  queueRunning.add(queueKey);
+  try {
+    for (;;) {
+      const job = queuePending.get(queueKey);
+      if (!job) break;
+      queuePending.delete(queueKey);
+      patchQueueState(queueKey, { saving: true, queued: false, error: null });
+      try {
+        await queuedWriter(job.path, job.value);
+        patchQueueState(queueKey, { savedAt: Date.now(), error: null, queued: queuePending.has(queueKey) });
+        job.waiting.forEach((w) => w.resolve());
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        patchQueueState(queueKey, { error: message, queued: queuePending.has(queueKey) });
+        job.waiting.forEach((w) => w.reject(e));
+      }
+    }
+  } finally {
+    queueRunning.delete(queueKey);
+    patchQueueState(queueKey, { saving: false, queued: queuePending.has(queueKey) });
+  }
+}
+
+/**
+ * Write `value` to `path`, one write at a time per `queueKey`. Everyone
+ * waiting on a value that was overtaken is answered when the newer value
+ * reaches the file, so "saved" always means the newest work is on file.
+ */
+export function saveJsonQueued(queueKey: string, path: string, value: unknown): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const previous = queuePending.get(queueKey);
+    queuePending.set(queueKey, { path, value, waiting: [...(previous?.waiting ?? []), { resolve, reject }] });
+    patchQueueState(queueKey, { queued: queueRunning.has(queueKey) });
+    void drainQueue(queueKey);
+  });
+}
+
+/** Wait for everything queued under a key (or every key) to finish. */
+export async function flushQueuedSaves(queueKey?: string): Promise<void> {
+  const busy = () =>
+    queueKey ? queueRunning.has(queueKey) || queuePending.has(queueKey) : queueRunning.size > 0 || queuePending.size > 0;
+  while (busy()) await sleep(0);
+}
+
+/** Forget a key's save state (leaving a screen, and between tests). */
+export function resetQueuedSaves(queueKey?: string): void {
+  if (queueKey) {
+    queueStates.delete(queueKey);
+    queuePending.delete(queueKey);
+    return;
+  }
+  queueStates.clear();
+  queuePending.clear();
+}
+
+// --------------------------------------------------------------- AI Reframe
+
+export type ReframeAspect = "9:16" | "4:5" | "1:1" | "16:9";
+
+export interface ReframeOptions {
+  /** an existing clip to re-shape … */
+  clipId?: string;
+  /** … or a stretch of the recording (integer ms on the source timeline) */
+  start_ms?: number;
+  end_ms?: number;
+  aspect: ReframeAspect | string;
+  /** auto | solo_follow | stacked_two | screen_share | full_frame | original */
+  layoutMode?: string;
+  /** the person to follow (p1, p2, …) */
+  subject?: string | null;
+  /** a caption look by name, or "off" */
+  captions?: string | false;
+  title?: string;
+}
+
+/** Which rendered output a shape asks for: everything upright shares the vertical slot. */
+export const reframeLayoutOf = (aspect: string): "vertical" | "wide" => (aspect === "16:9" ? "wide" : "vertical");
+
+/**
+ * Re-shape a clip, a transcript range or a stretch of the recording for a
+ * platform. There is no reframe pipeline: this is the clip preview with the
+ * shape (`aspect:`), the framing (`layout:`) and the person (`subject:`) asked
+ * for in the question context — one file, one report, nothing else touched.
+ */
+export async function runReframe(episodeId: string, options: ReframeOptions, onProgress?: ProgressHandler): Promise<RenderReport> {
+  const context = [`project: ${projectRoot(episodeId)}`];
+  if (options.clipId) context.push(`clip: ${options.clipId}`);
+  if (options.start_ms != null) context.push(`start: ${Math.max(0, Math.round(options.start_ms))}`);
+  if (options.end_ms != null) context.push(`end: ${Math.round(options.end_ms)}`);
+  if (!options.clipId && (options.start_ms == null || options.end_ms == null)) {
+    throw new Error("Pick a clip or a stretch of the recording to re-shape.");
+  }
+  const aspect = options.aspect || "9:16";
+  context.push(`aspect: ${aspect}`);
+  context.push(`layouts: ${reframeLayoutOf(aspect)}`);
+  if (options.layoutMode) context.push(`layout: ${options.layoutMode}`);
+  if (options.subject) context.push(`subject: ${options.subject}`);
+  if (options.captions === false) context.push("captions: off");
+  else if (options.captions) context.push(`captions: ${options.captions}`);
+  if (options.title) context.push(`title: ${options.title.replace(/\n/g, " ")}`);
+  const label = options.clipId ?? `${Math.round(options.start_ms ?? 0)}-${Math.round(options.end_ms ?? 0)}`;
+  const result = await runQuestion("preview", context, `reframe ${label} ${aspect}`, onProgress);
+  return toReport(pickManifest(result) ?? {});
 }

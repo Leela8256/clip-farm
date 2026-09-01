@@ -13,16 +13,20 @@ import {
   MessageSquare,
   Pencil,
   Play,
+  RefreshCw,
   RotateCcw,
   Save,
   Sparkles,
   UserRound,
 } from "lucide-react";
-import { CAPTION_PRESETS, DURATION_MODES, FILLER_POLICIES, SILENCE_POLICIES, complianceBadges, type ClipPlan, type Compliance, type EditVersion, type RequestSpec } from "@/lib/director";
+import { DURATION_MODES, FILLER_POLICIES, SILENCE_POLICIES, complianceBadges, type ClipPlan, type Compliance, type EditVersion, type RequestSpec } from "@/lib/director";
 import { LAYOUT_LABELS, LAYOUT_MODES, captionPresetOf, describeStatus, fmtClock, fmtSeconds, fmtTime, previewFile, type Candidate, type ClipEdit, type RenderReport, type StatusEvent } from "@/lib/podcast";
 import type { AudioProof } from "@/lib/engine";
 import ComplianceBadges from "./ComplianceBadges";
 import SoundTools from "./SoundTools";
+import StylePanel from "./StylePanel";
+import { galleryIdOf, legacyPresetOf, type BrandTemplate, type CaptionPresetCard } from "@/lib/brand";
+import { styleOf, type StyledEdit } from "./clip-style";
 
 export interface ExportLink {
   label: string;
@@ -264,11 +268,17 @@ export default function ClipWorkbench({
   error,
   revising,
   revisionNote,
+  stale,
+  blocked,
+  saving,
+  templates,
+  templatesError,
   onEdit,
   onSave,
   onReset,
   onPreview,
   onExport,
+  onApplyTemplate,
   onUseVersion,
   onRevise,
   onTime,
@@ -299,11 +309,21 @@ export default function ClipWorkbench({
   error: string | null;
   revising: boolean;
   revisionNote: string | null;
-  onEdit: (patch: ClipEdit) => void;
+  /** the preview on screen was made before the changes now on screen */
+  stale: boolean;
+  /** the edits file could not be opened — nothing may be changed until it can */
+  blocked: boolean;
+  /** a save is on its way to the file */
+  saving: boolean;
+  /** the producer's saved brand looks (null while they load) */
+  templates: BrandTemplate[] | null;
+  templatesError: string | null;
+  onEdit: (patch: StyledEdit) => void;
   onSave: () => void;
   onReset: () => void;
   onPreview: () => void;
   onExport: () => void;
+  onApplyTemplate: (template: BrandTemplate) => void;
   onUseVersion: (n: number | null) => void;
   onRevise: (instruction: string) => void;
   /** the player's position in clip-relative ms, about four times a second while it plays */
@@ -332,7 +352,9 @@ export default function ClipWorkbench({
 
   const versions: EditVersion[] = baseEdit.versions ?? [];
   const activeVersion = baseEdit.active_version ?? null;
-  const preset = captionPresetOf(edit, spec?.caption_preset ?? "classic");
+  const style = styleOf(edit);
+  const galleryId = galleryIdOf(style.caption_style, captionPresetOf(edit, spec?.caption_preset ?? "classic"));
+  const aspect = style.aspect ?? "9:16";
   const fillers = edit.filler_policy ?? (edit.remove_fillers === false ? "keep" : spec?.filler_policy ?? "smart");
   const silences = edit.silence_policy ?? (edit.tighten_pauses === false ? "keep" : spec?.silence_policy ?? "tighten");
   const target = edit.duration_seconds ?? spec?.duration.target_seconds ?? null;
@@ -455,6 +477,11 @@ export default function ClipWorkbench({
     else onEdit({ subject: id, layout_mode: layoutMode === "solo_follow" ? "solo_follow" : "auto" });
   };
 
+  const pickCaptions = (card: CaptionPresetCard) => {
+    const legacy = legacyPresetOf(card.id);
+    onEdit({ caption_style: card.style, caption_preset: legacy, captions: legacy });
+  };
+
   const submitInstruction = () => {
     const text = instruction.trim();
     if (!text || revising || !plan) return;
@@ -498,7 +525,10 @@ export default function ClipWorkbench({
       <section className="px-4 pt-4">
         {/* the frame follows the picture: a phone for vertical previews, a wide screen for the raw source / 16:9 renders */}
         <div className={`mx-auto w-full transition-[max-width] duration-200 ${showingPreview && previewKind === "vertical" ? "max-w-[292px]" : "max-w-full"}`}>
-          <div className={`relative overflow-hidden rounded-xl bg-ink p-1.5 shadow-elev-2 ${showingPreview && previewKind === "vertical" ? "aspect-[9/16] max-h-[520px]" : "aspect-video"}`}>
+          <div
+            style={showingPreview && previewKind === "vertical" && previewReport?.width && previewReport?.height ? { aspectRatio: `${previewReport.width} / ${previewReport.height}` } : undefined}
+            className={`relative overflow-hidden rounded-xl bg-ink p-1.5 shadow-elev-2 ${showingPreview && previewKind === "vertical" ? "aspect-[9/16] max-h-[520px]" : "aspect-video"}`}
+          >
             <div className="relative h-full w-full overflow-hidden rounded-[22px] bg-black">
               {videoSrc ? (
                 <video
@@ -519,8 +549,21 @@ export default function ClipWorkbench({
               )}
             </div>
             <span className="absolute left-1/2 top-3 z-10 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/55 px-2 py-0.5 font-mono text-[10px] text-white/90 backdrop-blur-sm">{pill}</span>
+            {showingPreview && stale && (
+              <span className="absolute left-1/2 top-9 z-10 -translate-x-1/2 whitespace-nowrap rounded-full bg-processing px-2 py-0.5 text-[10px] font-medium text-white shadow-elev-1">Behind your edits</span>
+            )}
           </div>
         </div>
+
+        {stale && (
+          <div className="rr-enter mt-2.5 flex flex-wrap items-center gap-2 rounded-md border border-processing/40 bg-processing/10 px-3 py-2 text-[12px] text-ink">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-processing" />
+            <span className="min-w-0 flex-1">Preview is behind your edits.</span>
+            <button type="button" onClick={onPreview} disabled={busy !== null} className="rr-btn rr-btn-sm h-7 px-2.5 text-[12px]">
+              {busy === "preview" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Render again
+            </button>
+          </div>
+        )}
 
         <div className="mt-3 flex items-center justify-between gap-3">
           <span className="rr-label">Framing</span>
@@ -528,6 +571,7 @@ export default function ClipWorkbench({
             <select
               value={layoutMode}
               onChange={(e) => onEdit({ layout_mode: e.target.value, subject: e.target.value === "auto" || e.target.value === "solo_follow" ? subject : null })}
+              disabled={blocked}
               className="rr-select rr-select-sm"
               aria-label="Layout"
             >
@@ -629,9 +673,13 @@ export default function ClipWorkbench({
         </div>
       </section>
 
-      {/* 5 · cleanup */}
+      {/* 5 · this clip: cleanup, length, style */}
       <section className="px-4 pt-4">
-        <div className="grid grid-cols-2 gap-x-3 gap-y-3">
+        <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-[13px] font-semibold text-ink">This clip</h3>
+          {spec && <span className="text-[11px] text-ink-faint">the request&apos;s own settings are on its chips</span>}
+        </div>
+        <div className={`grid grid-cols-2 gap-x-3 gap-y-3 ${blocked ? "pointer-events-none opacity-60" : ""}`}>
           <div className="rr-field">
             <span className="rr-label">Fillers</span>
             <select value={fillers} onChange={(e) => onEdit({ filler_policy: e.target.value, remove_fillers: e.target.value !== "keep" })} className="rr-select rr-select-sm" aria-label="Fillers">
@@ -646,16 +694,6 @@ export default function ClipWorkbench({
             <span className="rr-label">Pauses</span>
             <select value={silences} onChange={(e) => onEdit({ silence_policy: e.target.value, tighten_pauses: e.target.value === "tighten" })} className="rr-select rr-select-sm" aria-label="Pauses">
               {SILENCE_POLICIES.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="rr-field">
-            <span className="rr-label">Captions</span>
-            <select value={preset} onChange={(e) => onEdit({ caption_preset: e.target.value, captions: e.target.value })} className="rr-select rr-select-sm" aria-label="Captions">
-              {CAPTION_PRESETS.map((p) => (
                 <option key={p} value={p}>
                   {p}
                 </option>
@@ -698,8 +736,22 @@ export default function ClipWorkbench({
           </div>
         </div>
 
+        <div className="mt-3 border-t border-line pt-3">
+          <StylePanel
+            galleryId={galleryId}
+            aspect={aspect}
+            templates={templates}
+            templateId={style.brand?.id ?? null}
+            templatesError={templatesError}
+            disabled={blocked}
+            onPickCaptions={pickCaptions}
+            onPickAspect={(value) => onEdit({ aspect: value })}
+            onApplyTemplate={onApplyTemplate}
+          />
+        </div>
+
         {cuts.length > 0 && (
-          <div className="mt-3">
+          <div className={`mt-3 ${blocked ? "pointer-events-none opacity-60" : ""}`}>
             <Disclosure
               label="Planned edits"
               count={cuts.length}
@@ -746,10 +798,11 @@ export default function ClipWorkbench({
         )}
 
         <div className="mt-3 flex items-center justify-end gap-1.5">
-          <button type="button" onClick={onReset} className="rr-btn rr-btn-ghost rr-btn-sm" title="Back to the clip as found">
+          <span className="mr-auto text-[11px] text-ink-faint">{saving ? "saving…" : dirty ? "not saved yet" : "saved"}</span>
+          <button type="button" onClick={onReset} disabled={blocked} className="rr-btn rr-btn-ghost rr-btn-sm" title="Back to the clip as found">
             <RotateCcw className="h-3.5 w-3.5" /> Reset
           </button>
-          <button type="button" onClick={onSave} disabled={!dirty} className={`rr-btn rr-btn-sm ${dirty ? "rr-btn-primary" : ""}`} title="Edits are non-destructive">
+          <button type="button" onClick={onSave} disabled={!dirty || blocked} className={`rr-btn rr-btn-sm ${dirty && !blocked ? "rr-btn-primary" : ""}`} title="Your changes are kept for you as you make them">
             <Save className="h-3.5 w-3.5" /> Save
           </button>
         </div>
@@ -810,11 +863,11 @@ export default function ClipWorkbench({
       {/* 8 · actions */}
       <footer className="sticky bottom-0 z-10 mt-4 rounded-b-lg border-t border-line bg-surface-raised/95 px-4 py-3 backdrop-blur">
         <div className="flex items-center gap-2">
-          <button type="button" onClick={onPreview} disabled={busy !== null} className="rr-btn rr-btn-primary" title="Render a preview (R)">
+          <button type="button" onClick={onPreview} disabled={busy !== null || blocked} className="rr-btn rr-btn-primary" title="Render a preview (R)">
             {busy === "preview" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 text-accent" />}
             Render preview
           </button>
-          <button type="button" onClick={onExport} disabled={busy !== null} className="rr-btn" title="Export 9:16 + 16:9 with captions">
+          <button type="button" onClick={onExport} disabled={busy !== null || blocked} className="rr-btn" title="Export 9:16 + 16:9 with captions">
             {busy === "export" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
             Export
           </button>
@@ -827,7 +880,14 @@ export default function ClipWorkbench({
             </div>
           </div>
         )}
-        {error && <p className="mt-2 rounded-md bg-danger/10 px-2.5 py-1.5 text-[12px] leading-5 text-danger">{error}</p>}
+        {error && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md bg-danger/10 px-2.5 py-1.5 text-[12px] leading-5 text-danger">
+            <span className="min-w-0 flex-1">{error}</span>
+            <button type="button" onClick={onPreview} disabled={busy !== null} className="rr-btn rr-btn-sm h-7 px-2.5 text-[12px]">
+              <RefreshCw className="h-3.5 w-3.5" /> Try again
+            </button>
+          </div>
+        )}
         {exportLinks.length > 0 && (
           <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
             {exportLinks.map((l) => (

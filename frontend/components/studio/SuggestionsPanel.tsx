@@ -34,6 +34,7 @@ export default function SuggestionsPanel({
   onAudition,
   onMarkReviewed,
   onToggleOperation,
+  embedded,
 }: {
   suggestions: Suggestion[];
   edits: EpisodeEdits;
@@ -49,6 +50,8 @@ export default function SuggestionsPanel({
   onAudition: (range: { start_ms: number; end_ms: number }) => void;
   onMarkReviewed: (id: string) => void;
   onToggleOperation: (id: string) => void;
+  /** true when it sits inside another panel and brings no card of its own */
+  embedded?: boolean;
 }) {
   const review = suggestions.filter(isReviewOnly);
   const actionable = suggestions.filter((s) => !isReviewOnly(s));
@@ -64,7 +67,7 @@ export default function SuggestionsPanel({
   const missing = (isEnglish(language) ? [] : unsupported).map((k) => (SUGGESTION_LABELS[k as SuggestionKind] ?? k).toLowerCase());
 
   return (
-    <section className="rr-card overflow-hidden">
+    <section className={embedded ? "overflow-hidden rounded-sm border border-line" : "rr-card overflow-hidden"}>
       <header className="flex items-center justify-between gap-2 border-b border-line px-3.5 py-2.5">
         <h2 className="text-sm font-semibold">Suggestions</h2>
         <span className="rr-mono text-ink-faint">{open} to review</span>

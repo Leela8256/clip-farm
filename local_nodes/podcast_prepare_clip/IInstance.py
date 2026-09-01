@@ -64,6 +64,7 @@ from local_nodes.podcast_common.editing import (
     plan_cuts,
     rendered_ms,
 )
+from local_nodes.podcast_common.captions import resolve_caption_style, style_is_off
 from local_nodes.podcast_common.spec import CAPTION_PRESETS, RENDERABLE_ASPECTS, duration_window, normalize_spec
 from local_nodes.podcast_common.constraints import find_profanity
 from local_nodes.podcast_common import studio as studio_lib
@@ -268,13 +269,13 @@ class IInstance(IInstanceBase):
         timeline = read_json_or(store, project.analysis('studio/timeline.json'), {}) or {}
         words = studio_lib.expand_words(timeline.get('words') or [])
         version = ctx.get('version') if str(ctx.get('version') or '').strip() else edits.get('version')
-        quality = str(ctx.get('quality') or ('rough' if step == 'preview' else 'full')).strip().lower()
+        quality = str(ctx.get('quality') or ('standard' if step == 'preview' else 'export')).strip().lower()
         update_status(store, project, NODE, 'preparing', pipe, studio=step, quality=quality,
                       edits=len(edits.get('operations') or []))
         spec = studio_lib.build_prepared(
             project=project.root, episode_id=project.episode_id, source=source, media=data.get('media') or {},
             edits=edits, words=words, version=version, range_text=ctx.get('range'), quality=quality,
-            asset_exists=lambda path: exists(store, path), mode=step)
+            asset_exists=lambda path: exists(store, path), mode=step, size=ctx.get('size'))
         if not words:
             spec['warnings'].append('The recording has not been prepared for editing yet — captions were left out.')
         write_json(store, project.analysis(f"studio/prepared-v{spec['version']}.json"), spec)
@@ -320,8 +321,9 @@ class IInstance(IInstanceBase):
 
         # ---- options: question > edit > request spec > node config ----------
         title = ctx.get('title') or edit.get('title') or cand.get('title') or f'Clip {clip_id}'
-        captions = (_caption_choice(ctx.get('captions')) or _caption_choice(edit.get('caption_preset'))
-                    or _caption_choice(edit.get('captions')) or (req_spec or {}).get('caption_preset') or str(cfg['caption_preset']))
+        chosen_captions = (_caption_choice(ctx.get('captions')) or _caption_choice(edit.get('caption_preset'))
+                           or _caption_choice(edit.get('captions')) or (req_spec or {}).get('caption_preset'))
+        captions = chosen_captions or str(cfg['caption_preset'])
         fillers = (_policy(ctx.get('fillers'), FILLER_POLICIES, 'smart', 'keep')
                    or _policy(edit.get('filler_policy'), FILLER_POLICIES, 'smart', 'keep')
                    or _policy(edit.get('remove_fillers'), FILLER_POLICIES, 'smart', 'keep')
@@ -331,9 +333,41 @@ class IInstance(IInstanceBase):
                     or _policy(edit.get('silence_policy'), SILENCE_POLICIES, 'tighten', 'keep')
                     or _policy(edit.get('tighten_pauses'), SILENCE_POLICIES, 'tighten', 'keep')
                     or (req_spec or {}).get('silence_policy') or str(cfg['silence_policy']))
+        # the delivery shape: 9:16 (as always), the feed formats 4:5 / 1:1, or 16:9
+        aspect_asked = ctx.get('aspect') or edit.get('aspect') or (req_spec or {}).get('aspect_ratio')
+        aspect = str(aspect_asked or '9:16').strip()
+        if aspect not in RENDERABLE_ASPECTS:
+            aspect = '9:16'
         layouts = ctx.get('layouts') or edit.get('layouts') or ''
-        if not layouts and req_spec:
-            layouts = RENDERABLE_ASPECTS.get(req_spec.get('aspect_ratio') or '', '')
+        if not layouts and aspect_asked:
+            layouts = RENDERABLE_ASPECTS.get(aspect, '')
+
+        # ---- the look: a caption style object, and the brand template behind it
+        # The producer's own choice always wins; a template only fills a gap.
+        brand = studio_lib.normalize_brand(edit.get('brand') or (req_spec or {}).get('brand'))
+        # a full style may arrive straight in the question context as JSON (the
+        # brand sample and one-off renders have no saved edit to carry it)
+        style_source = None
+        if ctx.get('caption_style'):
+            try:
+                parsed = json.loads(str(ctx['caption_style']))
+                style_source = parsed if isinstance(parsed, dict) else None
+            except (TypeError, ValueError):
+                style_source = None
+        if style_source is None:
+            style_source = edit.get('caption_style') if isinstance(edit.get('caption_style'), dict) else None
+        if style_source is None and isinstance((req_spec or {}).get('caption_style'), dict):
+            style_source = (req_spec or {}).get('caption_style')
+        if style_source is None and chosen_captions is None:
+            style_source = studio_lib.brand_caption_style(brand)
+        caption_style = resolve_caption_style(style_source or captions)
+        if chosen_captions == 'off':
+            caption_style = resolve_caption_style('off')
+        if style_is_off(caption_style):
+            captions = 'off'
+        brand_files, brand_warnings = studio_lib.brand_assets(
+            edit.get('assets') if isinstance(edit.get('assets'), dict) else {}, brand,
+            lambda path: exists(store, path))
         target_s = parse_timestamp(ctx.get('duration')) if ctx.get('duration') else None
         if target_s is not None:
             target_s = target_s / 1000 if target_s > 1000 else target_s  # 'duration: 42' is seconds
@@ -433,6 +467,7 @@ class IInstance(IInstanceBase):
         rendered = rendered_ms(keep)
         compliance = self._compliance(clip_id, cand, req_spec, fit, cuts, clip_words, transcript, mode if target_s else 'natural',
                                       target_s, rendered)
+        compliance['warnings'].extend(brand_warnings)
         plan = {
             'schema_version': 2,
             **project.to_ref(),
@@ -461,6 +496,10 @@ class IInstance(IInstanceBase):
             'options': {
                 'captions': captions != 'off',
                 'caption_preset': captions,
+                'caption_style': caption_style,
+                'aspect': aspect,
+                'brand': brand,
+                'assets': brand_files,
                 'filler_policy': fillers,
                 'silence_policy': silences,
                 'tighten_pauses': silences == 'tighten',

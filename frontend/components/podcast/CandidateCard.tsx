@@ -11,6 +11,8 @@ interface Props {
   selected: boolean;
   hasPreview: boolean;
   hasExport: boolean;
+  /** the preview was made before the changes now on screen */
+  stale?: boolean;
   busy: "preview" | "export" | null;
   onSelect: () => void;
   onPreview: () => void;
@@ -79,7 +81,7 @@ export default function CandidateCard(props: Props) {
   return variant === "card" ? <CardVariant {...props} /> : <RowVariant {...props} />;
 }
 
-function RowVariant({ cand, spec, selected, hasPreview, hasExport, busy, onSelect, onPreview, onExport }: Props) {
+function RowVariant({ cand, spec, selected, hasPreview, hasExport, stale, busy, onSelect, onPreview, onExport }: Props) {
   const directed = cand.scores.prompt_match != null;
   const badges = cand.compliance ? complianceBadges(cand.compliance, spec) : [];
   const seconds = Math.round(cand.duration_ms / 1000);
@@ -98,11 +100,11 @@ function RowVariant({ cand, spec, selected, hasPreview, hasExport, busy, onSelec
           onSelect();
         }
       }}
-      className={`rr-card group relative cursor-pointer select-none outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 ${
-        selected ? "border-accent shadow-glow-accent" : "rr-card-hover"
+      className={`rr-card group relative cursor-pointer select-none overflow-hidden outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 ${
+        selected ? "border-accent bg-accent/[0.06] shadow-glow-accent" : "rr-card-hover"
       }`}
     >
-      {selected && <span aria-hidden="true" className="absolute bottom-3 left-0 top-3 w-[3px] rounded-r-full bg-accent" />}
+      {selected && <span aria-hidden="true" className="absolute inset-y-0 left-0 w-[3px] bg-accent" />}
 
       <div className="flex items-center gap-3 px-3.5 py-2.5">
         <RankBadge cand={cand} />
@@ -117,7 +119,12 @@ function RowVariant({ cand, spec, selected, hasPreview, hasExport, busy, onSelec
         </div>
 
         <span className="flex w-4 shrink-0 flex-col items-center gap-1" aria-hidden={!hasPreview && !hasExport}>
-          {hasPreview && <span className="h-1.5 w-1.5 rounded-full bg-ready" title="Previewed" />}
+          {hasPreview && (
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${stale ? "bg-processing ring-2 ring-processing/30" : "bg-ready"}`}
+              title={stale ? "Preview is behind your edits" : "Previewed"}
+            />
+          )}
           {hasExport && <span className="h-1.5 w-1.5 rounded-full bg-accent" title="Exported" />}
         </span>
 
@@ -141,6 +148,10 @@ function RowVariant({ cand, spec, selected, hasPreview, hasExport, busy, onSelec
 
       {selected && (
         <div className="rr-enter border-t border-line px-3.5 py-3 pl-[52px]">
+          <p className="mb-2 flex flex-wrap items-center gap-2 text-[11px] font-medium uppercase tracking-[0.08em] text-accent">
+            Editing this clip
+            {stale && <span className="rounded-full bg-processing/15 px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal text-processing">preview is behind your edits</span>}
+          </p>
           {cand.reason && <p className="line-clamp-2 text-[12px] leading-5 text-ink-dim">{cand.reason}</p>}
           {!cand.custom && (
             <div className={cand.reason ? "mt-2.5" : ""}>

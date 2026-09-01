@@ -32,11 +32,11 @@ import time
 import wave
 from pathlib import Path
 
-from .captions import group_words
+from .captions import group_words, resolve_caption_style
 from .clips import FILLERS, TimelineMap, map_words_to_output
 from .constraints import PROFANITY
 from .editing import filler_cut_safety
-from .media import keep_segments, run_ffmpeg
+from .media import aspect_dims, export_short_edge, keep_segments, preview_dims, run_ffmpeg
 
 SCHEMA_VERSION = 1
 EDITS_SCHEMA = 1
@@ -716,6 +716,154 @@ def map_chapters(sections, timeline: TimelineMap, duration_ms: int) -> tuple[lis
 # ------------------------------------------------------------- prepared spec
 
 
+def preview_cache_hit(report, spec_hash: str, tier: str, rng=None) -> bool:
+    """
+    Whether a preview already on disk was made from exactly this edit: the
+    same spec hash, the same tier and the same range. Anything else — an older
+    report, a different tier, a report with no hash — is a miss, so the render
+    runs rather than handing back the wrong picture.
+    """
+    if not isinstance(report, dict) or not spec_hash:
+        return False
+    if report.get('spec_hash') != spec_hash:
+        return False
+    detail = report.get('quality')
+    if not isinstance(detail, dict) or detail.get('tier') != tier:
+        return False
+    wanted = [int(rng[0]), int(rng[1])] if rng else None
+    return (report.get('range') or None) == wanted
+
+
+# ------------------------------------------------------------------- brands
+#
+# A brand template lives in the browser; what reaches a node is the RESOLVED
+# snapshot the client stamped onto the request (`{id, revision, hash,
+# resolved}`). Nodes never read a template file — they read this snapshot, and
+# only where the producer's own edits left a slot empty.
+
+BRAND_ASSET_KEYS = ('logo', 'intro', 'outro', 'music')
+_BRAND_FIELDS = {
+    'logo': ('path', 'corner', 'height', 'opacity'),
+    'intro': ('path',),
+    'outro': ('path',),
+    'music': ('path', 'gain_db', 'duck_db', 'fade_ms'),
+    'cta': ('text',),
+    'headline': ('text',),
+    'layout': ('mode', 'aspect'),
+    'cleanup': ('filler_policy', 'silence_policy', 'mode'),
+}
+
+
+def normalize_brand(value) -> dict | None:
+    """
+    Validate the brand snapshot a request carries. Anything unrecognised is
+    dropped rather than passed on to ffmpeg; an empty or malformed snapshot
+    becomes None so the render simply behaves as if no template were applied.
+    """
+    if not isinstance(value, dict):
+        return None
+    raw = value.get('resolved') if isinstance(value.get('resolved'), dict) else {}
+    resolved: dict = {}
+    for key, fields in _BRAND_FIELDS.items():
+        item = raw.get(key)
+        if isinstance(item, dict):
+            kept = {f: item[f] for f in fields if item.get(f) not in (None, '')}
+            if kept:
+                resolved[key] = kept
+    if raw.get('captions') is not None:
+        resolved['captions'] = resolve_caption_style(raw.get('captions'))
+    if not resolved and not value.get('id'):
+        return None
+    try:
+        revision = int(value.get('revision') or 0)
+    except (TypeError, ValueError):
+        revision = 0
+    return {
+        'id': str(value.get('id') or ''),
+        'name': str(value.get('name') or '') or None,
+        'revision': revision,
+        'hash': str(value.get('hash') or ''),
+        'resolved': resolved,
+    }
+
+
+def brand_assets(assets: dict | None, brand: dict | None, asset_exists=None) -> tuple[dict, list[str]]:
+    """
+    The template's logo / intro / outro / music filled in ONLY where the
+    producer's own choice left the slot empty — an explicit setting always
+    wins. A brand file that is no longer in the library is skipped with a
+    warning, exactly like an edit's own asset.
+    """
+    merged = dict(assets or {})
+    warnings: list[str] = []
+    for key in BRAND_ASSET_KEYS:
+        if merged.get(key):
+            continue                            # the producer set this one — never overrule it
+        item = ((brand or {}).get('resolved') or {}).get(key)
+        if not isinstance(item, dict) or not item.get('path'):
+            continue
+        if asset_exists is not None and not asset_exists(str(item['path'])):
+            warnings.append(f'The brand {key} file is no longer in your library — it was left out.')
+            continue
+        merged[key] = dict(item)
+    return merged, warnings
+
+
+def brand_caption_style(brand: dict | None) -> dict | None:
+    """The template's caption style, when it has one."""
+    style = ((brand or {}).get('resolved') or {}).get('captions')
+    return dict(style) if isinstance(style, dict) else None
+
+
+# -------------------------------------------------------------- render tiers
+#
+# One place decides what a studio render actually encodes. The preview tiers
+# are honest about their own limits: the standard pass skips mastering (and
+# says so in the report) so the whole episode comes back quickly, the range
+# pass runs the full chain on the stretch the producer is judging.
+
+def render_tier(*, mode: str, quality=None, has_range: bool = False, aspect: str = '16:9',
+                media: dict | None = None, audio: dict | None = None, size=None) -> dict:
+    """
+    The encode settings for one render:
+
+    * `export`      — the requested size (720 / 1080 / source), crf 20, full chain.
+    * `range`       — up to 1920x1080, never upscaled, crf 19, full chain incl. mastering + music.
+    * `standard`    — the whole episode, long edge <= 1280, never upscaled, crf 22,
+                      cleanup but NO two-pass mastering.
+
+    What was ASKED for never overrules what was SENT: a request carrying a
+    range is always the range tier (older clients send it as `quality: full`),
+    and a whole-episode preview is always the standard tier (`rough` to them).
+    The tier's own name is the canonical quality every report carries.
+    """
+    del quality                                    # a legacy label, never a decision
+    media = media or {}
+    audio = audio or {}
+    source_w, source_h = int(media.get('width') or 0), int(media.get('height') or 0)
+    source_fps = float(media.get('fps') or 0) or 30.0
+    fps = max(1, min(30, int(round(source_fps))))
+    clean = (bool(audio.get('noise_reduction', True)), bool(audio.get('high_pass', True)),
+             bool(audio.get('compression', True)))
+    master = bool(audio.get('master', True))
+    if str(mode).lower() == 'export':
+        short = export_short_edge(size, source_w, source_h)
+        width, height = aspect_dims(aspect, short)
+        tier = {'tier': 'export', 'width': width, 'height': height, 'crf': 20, 'preset': 'veryfast',
+                'channels': 2, 'master': master, 'music': True, 'cards': True}
+    elif has_range:
+        width, height = preview_dims(aspect, 1920, 1080, source_w, source_h)
+        tier = {'tier': 'range', 'width': width, 'height': height, 'crf': 19, 'preset': 'veryfast',
+                'channels': 2, 'master': master, 'music': True, 'cards': False}
+    else:
+        width, height = preview_dims(aspect, 1280, 1280, source_w, source_h)
+        tier = {'tier': 'standard', 'width': width, 'height': height, 'crf': 22, 'preset': 'veryfast',
+                'channels': 2, 'master': False, 'music': False, 'cards': True}
+    tier.update({'fps': fps, 'clean': clean, 'quality': tier['tier'],
+                 'source_width': source_w, 'source_height': source_h})
+    return tier
+
+
 def resolve_assets(assets, asset_exists=None) -> tuple[dict, list[str]]:
     """Assets with their files confirmed present; anything missing is skipped with a warning."""
     warnings: list[str] = []
@@ -754,7 +902,7 @@ def parse_range(text, output_duration_ms: int) -> tuple[list[int] | None, list[s
 
 def build_prepared(*, project: str, episode_id: str, source: str, media: dict, edits: dict,
                    words: list[dict], version: int | None = None, range_text=None, quality: str = 'rough',
-                   asset_exists=None, mode: str = 'preview') -> dict:
+                   asset_exists=None, mode: str = 'preview', brand=None, size=None) -> dict:
     """
     The complete episode render spec: what survives, what is silenced, where
     everything lands on the finished timeline, and the finishing settings.
@@ -777,9 +925,14 @@ def build_prepared(*, project: str, episode_id: str, source: str, media: dict, e
     warnings += chapter_warnings
     assets, asset_warnings = resolve_assets(edits.get('assets'), asset_exists)
     warnings += asset_warnings
+    # the brand template fills the slots the producer left empty — never the ones they set
+    snapshot = normalize_brand(brand if brand is not None else edits.get('brand'))
+    assets, brand_warnings = brand_assets(assets, snapshot, asset_exists)
+    warnings += brand_warnings
 
     visual = {**DEFAULT_VISUAL, **{k: v for k, v in (edits.get('visual') or {}).items() if k != 'caption_style'}}
-    style = {**DEFAULT_CAPTION_STYLE, **((edits.get('visual') or {}).get('caption_style') or {})}
+    style = {**DEFAULT_CAPTION_STYLE, **(brand_caption_style(snapshot) or {}),
+             **((edits.get('visual') or {}).get('caption_style') or {})}
     visual['caption_style'] = style
     audio = {**DEFAULT_AUDIO, **(edits.get('audio') or {})}
     speakers = edits.get('speakers') if isinstance(edits.get('speakers'), dict) else {}
@@ -824,6 +977,8 @@ def build_prepared(*, project: str, episode_id: str, source: str, media: dict, e
         'corrections_applied': corrected,
         'range': out_range,
         'quality': str(quality or 'rough'),
+        'size': str(size) if size not in (None, '') else None,
+        'brand': snapshot,
         'prepared_at': time.time(),
         'warnings': warnings,
     }
@@ -886,6 +1041,7 @@ def loudness_warning(block: dict) -> str | None:
 
 
 def build_studio_report(*, mode: str, quality: str, version: int, title, check: dict, measured,
+                        detail: dict | None = None,
                         measurements=None, target_lufs=None, mastered: bool = True,
                         rng=None, preview_output_start_ms: int = 0, total_ms: int, body_ms: int,
                         lead_ms: int = 0, tail_ms: int = 0, files=None, aspect=None, extras=None,
@@ -911,7 +1067,10 @@ def build_studio_report(*, mode: str, quality: str, version: int, title, check: 
         'schema_version': REPORT_SCHEMA,
         'kind': 'studio',
         'mode': mode,
-        'quality': quality,
+        # `quality` is the measured block (media.quality_block) whenever the
+        # renderer hands one over; the tier's own name stays alongside it.
+        'quality': detail if isinstance(detail, dict) else quality,
+        'quality_label': quality,
         'version': int(version),
         'title': title,
         'range': [int(rng[0]), int(rng[1])] if rng else None,

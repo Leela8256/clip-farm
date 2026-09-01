@@ -85,6 +85,14 @@ shared with `tools/prompts.py`) so the pipelines stay stock all the way to the L
 - Keep the design tokens in `app/design-tokens.css` as the source of truth for colours/type, and build
   from its primitives (`.rr-card`, `.rr-btn*`, `.rr-chip*`, `.rr-input/.rr-select/.rr-textarea`, `.rr-field`,
   `.rr-progress`, `.rr-skeleton`, `.rr-enter`) so every screen feels like one product.
+- Product structure: three independent workflows — Create Clips (/episode), Episode Editor (/studio),
+  AI Reframe (/reframe) — entered from My Projects (/projects). They share media/alignment/rendering and
+  the store but never each other's state; brand templates apply to any of them via a resolved snapshot
+  (`{id, revision, hash, resolved}`) stamped into the plan/spec — nodes never re-read templates.
+- Studio preview tiers: instant (browser, no render) · standard (≤1280, crf 22, veryfast, stereo, no
+  mastering, cached by spec hash) · range (≤1920×1080, crf 19, full chain) · export (`size:` 720|1080|source,
+  default 1080). Every render report carries a measured `quality` block; never fake a control that the
+  render spec cannot see.
 - The UI never names the machinery: no "RocketRide", "engine", "Claude", "pipeline", "node", "store",
   "index" in user-facing text (say "the director", "your library", "transcript search", "analysing").
   `describeStatus()` wording follows the same rule; the sidebar dot is the only connection indicator.
@@ -139,13 +147,19 @@ local_nodes/podcast_*/               services.json · IGlobal.py · IInstance.py
 local_nodes/tests/                   python -m unittest discover -s local_nodes/tests
 frontend/app/layout.tsx              shell: sidebar navigation (New episode · Clip Studio · History), toasts
 frontend/app/page.tsx                home: upload only
-frontend/app/history/page.tsx        history of runs (live status, search, sort)
+frontend/app/projects/page.tsx       My Projects: every uploaded project, search/sort/filters, collections, multi-select batches
+frontend/app/history/page.tsx        compatibility redirect to /projects
+frontend/app/brands/page.tsx         brand template grid; app/brand/page.tsx — template editor + caption designer
+frontend/app/reframe/page.tsx        AI Reframe: clip / range → platform layouts (9:16, 4:5, 1:1, 16:9)
 frontend/app/studio/page.tsx         Podcast Studio (/studio?id=…): transcript-first full-episode editor
 frontend/components/studio/          StudioCanvas · TranscriptEditor · TimelineBar · Inspector · SuggestionsPanel · helpers
 frontend/app/episode/page.tsx        Clip Studio (/episode?id=…): map, Direct / Moments / Transcript tabs, sticky preview column, keyboard (R, [, ], Space, Esc)
 frontend/components/shell/           Sidebar (owns the connection + retry) · Toasts (`toast()`)
 frontend/components/history/         RunRow · RunThumb · HistorySkeleton
 frontend/lib/studio.ts + studio-engine.ts  episode-edit model (undo/redo, suggestions, map) + studio SDK calls
+frontend/lib/library.ts              My Projects listing, collections (library/collections), project writers — fail-closed
+frontend/lib/brand.ts                brand templates (brand-templates/<id>/), CaptionStyle + 9-gallery presets, resolveBrand hash
+frontend/lib/batch.ts                multi-project clip batches (library/batches), parse-once + bounded pool of 2
 frontend/components/podcast/         NewEpisodeForm · StatusTimeline · PromptDirector · ChapterStrip · CandidateCard · ClipWorkbench · SoundTools · ComplianceBadges · TranscriptPanel
 frontend/lib/engine.ts               connection, store helpers, pipeline runs (analysis, index, visual scan, search, parse, director, revise, clips)
 frontend/lib/podcast.ts              types, manifest/report normalisation, status text, formatting

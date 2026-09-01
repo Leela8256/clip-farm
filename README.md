@@ -167,6 +167,10 @@ local_nodes/
   podcast_render/       plan → preview or export files (+ report, measured duration, layout summary)
   tests/                unit tests for the pure logic (python -m unittest)
 frontend/               static site (next build → out/), served by nginx in Docker
+                        Three workflows from one library: My Projects (/projects — cards, collections,
+                        multi-project clip batches), Create Clips (/episode), Episode Editor (/studio),
+                        AI Reframe (/reframe); Brands (/brands) hold reusable looks: logo, intro/outro,
+                        music, caption styles from a 9-preset visual gallery
                         + the Podcast Studio (/studio): edit the whole episode by its transcript —
                         cut/mute/bleep from text, reviewable cleanup suggestions, audio finishing,
                         branding (intro/outro/music/logo/cards), captions, chapters; export

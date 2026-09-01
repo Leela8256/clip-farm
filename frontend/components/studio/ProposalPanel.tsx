@@ -36,6 +36,7 @@ export default function ProposalPanel({
   onApplySafe,
   onDiscard,
   onAudition,
+  embedded,
 }: {
   proposal: EditProposal | null;
   edits: EpisodeEdits;
@@ -48,6 +49,8 @@ export default function ProposalPanel({
   onApplySafe: () => void;
   onDiscard: () => void;
   onAudition: (range: { start_ms: number; end_ms: number }) => void;
+  /** true when it sits inside another panel and brings no card of its own */
+  embedded?: boolean;
 }) {
   const [goal, setGoal] = useState("");
   const [pick, setPick] = useState<SuggestionMode>(mode);
@@ -65,7 +68,7 @@ export default function ProposalPanel({
   }
 
   return (
-    <section className="rr-card overflow-hidden">
+    <section className={embedded ? "overflow-hidden rounded-sm border border-line" : "rr-card overflow-hidden"}>
       <header className="flex items-center justify-between gap-2 border-b border-line px-3.5 py-2.5">
         <h2 className="inline-flex items-center gap-1.5 text-sm font-semibold">
           <Sparkles className="h-3.5 w-3.5 text-accent" /> Draft an edit

@@ -29,14 +29,13 @@ from local_nodes.podcast_common.cache import local_source
 from local_nodes.podcast_common.config import as_bool
 from local_nodes.podcast_common.media import (
     CAPTION_STYLE_PRESETS,
+    CLIP_ASPECTS,
     EPISODE_PART_MS,
     LAYOUTS,
     aspect_dims,
     assemble_episode_audio,
-    capped_dims,
     caption_layout_for,
     chapters_payload,
-    colour_dialogue,
     concat_parts,
     dims,
     conform_audio,
@@ -47,6 +46,7 @@ from local_nodes.podcast_common.media import (
     mux_episode,
     plan_episode_parts,
     probe,
+    quality_block,
     range_to_keep,
     render_asset_part,
     render_audio,
@@ -55,7 +55,6 @@ from local_nodes.podcast_common.media import (
     render_episode_audio,
     render_episode_part,
     render_layout_video,
-    restyle_ass,
     shift_groups,
     slice_audio,
     spec_hash,
@@ -63,8 +62,24 @@ from local_nodes.podcast_common.media import (
     transcode_aspect,
 )
 from local_nodes.podcast_common.clips import TimelineMap, map_words_to_output
-from local_nodes.podcast_common.captions import build_ass, build_srt, build_vtt, group_words, seam_placement
-from local_nodes.podcast_common.studio import build_studio_report
+from local_nodes.podcast_common.captions import (
+    CAPTION_LAYOUTS,
+    build_ass,
+    build_srt,
+    build_vtt,
+    group_words,
+    group_words_for,
+    resolve_caption_style,
+    seam_placement,
+    style_is_off,
+)
+from local_nodes.podcast_common.studio import (
+    brand_assets,
+    build_studio_report,
+    normalize_brand,
+    preview_cache_hit,
+    render_tier,
+)
 
 from .IGlobal import IGlobal
 
@@ -122,8 +137,21 @@ class IInstance(IInstanceBase):
         wanted = str(options.get('layouts') or cfg['layouts'])
         layouts = [l.strip() for l in wanted.split(',') if l.strip() in LAYOUTS] or ['vertical']
         preset = str(options.get('caption_preset') or 'classic')
-        captions_on = as_bool(options.get('captions'), True) and preset != 'off' and bool(cfg['captions'])
-        has_video = bool((spec.get('media') or {}).get('has_video', True))
+        # the caption look: the style object the producer (or their brand template) chose,
+        # or the legacy preset name — resolve_caption_style renders both identically
+        style = resolve_caption_style(options.get('caption_style') or preset)
+        captions_on = as_bool(options.get('captions'), True) and not style_is_off(style) and bool(cfg['captions'])
+        # the vertical pass can be reshaped for the feed formats (9:16 as always, 4:5, 1:1)
+        aspect = str(options.get('aspect') or '9:16').strip()
+        if aspect not in CLIP_ASPECTS:
+            aspect = '9:16'
+        # the brand snapshot only fills what the producer's own options left empty
+        brand = normalize_brand(spec.get('brand') or options.get('brand'))
+        brand_files, brand_warnings = brand_assets(
+            options.get('assets') if isinstance(options.get('assets'), dict) else {}, brand)
+        logo_cfg = brand_files.get('logo') if isinstance(brand_files.get('logo'), dict) else None
+        media_info = spec.get('media') or {}
+        has_video = bool(media_info.get('has_video', True))
         start, end = int(spec['start_ms']), int(spec['end_ms'])
         keep = [(int(s), int(e)) for s, e in (spec.get('keep') or [[0, end - start]])]
         mutes = [(int(s), int(e)) for s, e in (spec.get('mutes') or [])]
@@ -137,13 +165,14 @@ class IInstance(IInstanceBase):
         update_status(store, project, NODE, 'rendering', pipe, clip=clip_id, mode=mode, layouts=layouts,
                       reframe=[s['layout'] for s in (plan_layout or {}).get('segments', [])] if reframes else None)
         local = local_source(store, spec['source'])
+        logo_path = self._studio_asset(store, logo_cfg, 'logo', brand_warnings) if logo_cfg else None
         work = Path(tempfile.mkdtemp(prefix='podcast_render_'))
         files: dict[str, str] = {}
         try:
             source_wav = slice_audio(local, start, end, work / 'source.wav')
             mastered = render_audio(source_wav, keep, work / 'mastered.wav', mutes_ms=mutes)
             timeline = TimelineMap(keep)
-            groups = group_words(map_words_to_output(spec.get('words') or [], timeline))
+            groups = group_words_for(map_words_to_output(spec.get('words') or [], timeline), style)
             # caption placement follows the layout on the rendered timeline (stacked → the seam)
             placement = None
             if reframes:
@@ -159,21 +188,26 @@ class IInstance(IInstanceBase):
             first_media = None
             if has_video:
                 for layout in layouts:
+                    # the shape the pass really renders: the aspect reshapes the vertical pass only
+                    shape = aspect if (layout == 'vertical' and aspect in ('4:5', '1:1')) else layout
                     ass_path = None
                     if captions_on and groups:
                         ass_path = work / f'captions_{layout}.ass'
-                        ass_path.write_text(build_ass(groups, layout, preset, placement=placement if layout == 'vertical' else None), encoding='utf-8')
+                        ass_path.write_text(
+                            build_ass(groups, shape if shape in CAPTION_LAYOUTS else layout, style=style,
+                                      placement=placement if layout == 'vertical' else None), encoding='utf-8')
                     update_status(store, project, NODE, 'encoding', pipe, clip=clip_id, mode=mode, layout=layout)
                     if layout == 'vertical' and reframes:
-                        canvas_w, canvas_h = dims('vertical', int(cfg['size']))
+                        canvas_w, canvas_h = dims(shape, int(cfg['size']))
                         plan_layout['canvas'] = {'width': canvas_w, 'height': canvas_h}
                         mp4 = render_layout_video(local, start, end, keep, plan_layout, mastered, work / f'{clip_id}_{layout}.mp4',
                                                   work, ass_path=ass_path, fps=int(cfg['fps']), crf=int(cfg['crf']),
-                                                  preset=str(cfg['preset']))
+                                                  preset=str(cfg['preset']), logo=logo_cfg, logo_path=logo_path)
                     else:
                         mp4 = render_clip_video(local, start, end, keep, mastered, work / f'{clip_id}_{layout}.mp4',
-                                                layout=layout, size=int(cfg['size']), ass_path=ass_path,
-                                                fps=int(cfg['fps']), crf=int(cfg['crf']), preset=str(cfg['preset']))
+                                                layout=shape, size=int(cfg['size']), ass_path=ass_path,
+                                                fps=int(cfg['fps']), crf=int(cfg['crf']), preset=str(cfg['preset']),
+                                                logo=logo_cfg, logo_path=logo_path)
                     name = f'{clip_id}.mp4' if (mode == 'preview' and layout == layouts[0]) else f'{clip_id}_{layout}.mp4'
                     files[layout] = write_file(store, out(name), mp4)
                     first_media = first_media or mp4
@@ -245,6 +279,13 @@ class IInstance(IInstanceBase):
             'schema_version': 2,
             'clip_id': clip_id,
             'mode': mode,
+            'aspect': aspect,
+            'quality': quality_block('clip-preview' if mode == 'preview' else 'export', check,
+                                     crf=int(cfg['crf']), preset=str(cfg['preset']), channels=2,
+                                     source_width=media_info.get('width'), source_height=media_info.get('height'),
+                                     fps=int(cfg['fps'])),
+            'caption_style': style,
+            'brand': {k: brand.get(k) for k in ('id', 'revision', 'hash')} if brand else None,
             'title': spec.get('title'),
             'start_ms': start,
             'end_ms': end,
@@ -253,7 +294,7 @@ class IInstance(IInstanceBase):
             'files': files,
             'layouts': layouts,
             'captions': bool(captions_on and groups),
-            'caption_preset': preset if captions_on else 'off',
+            'caption_preset': (style.get('preset') or preset) if captions_on else 'off',
             'caption_lines': len(groups),
             'cuts': len(keep) - 1,
             'muted': len(mutes),
@@ -265,6 +306,7 @@ class IInstance(IInstanceBase):
             'compliance': compliance if isinstance(compliance, dict) else None,
             'layout': layout_summary,
             'version': spec.get('version'),
+            'warnings': brand_warnings or None,
             'rendered_at': time.time(),
             'seconds': seconds,
         }
@@ -307,17 +349,18 @@ class IInstance(IInstanceBase):
         # true marker (the prepare node's shape) with the mode in `mode`
         mode = 'export' if 'export' in (str(spec.get('studio') or '').lower(), str(spec.get('mode') or '').lower()) else 'preview'
         version = int(spec.get('version') or 1)
-        quality = str(spec.get('quality') or ('full' if mode == 'export' else 'rough')).lower()
         rng = spec.get('range') if isinstance(spec.get('range'), (list, tuple)) and len(spec.get('range')) == 2 else None
         visual = spec.get('visual') or {}
         audio_cfg = spec.get('audio') or {}
-        assets = spec.get('assets') or {}
+        # the brand template only ever fills a slot the producer left empty
+        brand = normalize_brand(spec.get('brand'))
+        assets, brand_warnings = brand_assets(spec.get('assets') or {}, brand)
         media = spec.get('media') or {}
         has_video = bool(media.get('has_video', True))
         aspect = str(visual.get('aspect_ratio') or '16:9')
         fit = str(visual.get('fit') or 'fit')
         background = visual.get('background') or 'blur'
-        warnings_out: list[str] = list(spec.get('warnings') or [])
+        warnings_out: list[str] = list(spec.get('warnings') or []) + brand_warnings
 
         full_keep = [(int(s), int(e)) for s, e in (spec.get('keep') or []) if int(e) > int(s)]
         if not full_keep:
@@ -337,26 +380,26 @@ class IInstance(IInstanceBase):
                 raise ValueError('the requested range falls entirely inside a cut')
         body_ms = sum(e - s for s, e in keep)
 
-        source_fps = float(media.get('fps') or 0) or 30.0
-        if mode == 'export':
-            out_w, out_h = aspect_dims(aspect, 1080)
-            fps, crf, x264 = min(30, int(round(source_fps))) or 30, 20, 'veryfast'
-            channels, master = 2, bool(audio_cfg.get('master', True))
-            clean = (bool(audio_cfg.get('noise_reduction', True)), bool(audio_cfg.get('high_pass', True)),
-                     bool(audio_cfg.get('compression', True)))
-        elif rng:
-            cap = min(1280, int(media.get('width') or 1280) or 1280)
-            out_w, out_h = capped_dims(aspect, max(640, cap))
-            fps, crf, x264 = min(30, int(round(source_fps))) or 30, 23, str(cfg['preset'])
-            channels, master = 2, bool(audio_cfg.get('master', True))
-            clean = (bool(audio_cfg.get('noise_reduction', True)), bool(audio_cfg.get('high_pass', True)),
-                     bool(audio_cfg.get('compression', True)))
-        else:                                  # the rough whole-episode pass
-            out_w, out_h = capped_dims(aspect, 640)
-            fps, crf, x264 = 15, 32, 'ultrafast'
-            channels, master = 1, False
-            clean = (False, bool(audio_cfg.get('high_pass', True)), False)
+        # one place decides the encode: export | range | standard (see studio.render_tier)
+        tier = render_tier(mode=mode, quality=spec.get('quality'), has_range=bool(rng), aspect=aspect,
+                           media=media, audio=audio_cfg, size=spec.get('size'))
+        out_w, out_h = tier['width'], tier['height']
+        fps, crf, x264 = tier['fps'], tier['crf'], tier['preset']
+        channels, master = tier['channels'], tier['master']
+        clean = tier['clean']
+        quality = tier['quality']
         captions_on = bool(visual.get('captions', True)) and bool(groups) and bool(cfg['captions'])
+
+        # a finished preview of exactly this spec is worth more than rendering it again
+        hashed = spec_hash(spec)
+        preview_name = f'range-v{version}' if rng else f'standard-v{version}'
+        preview_suffix = 'mp4' if has_video else 'mp3'
+        if mode != 'export':
+            cached = self._cached_studio(store, project, preview_name, preview_suffix, hashed, tier['tier'], rng)
+            if cached is not None:
+                update_status(store, project, NODE, 'rendered', pipe, mode='studio', quality=quality,
+                              version=version, cached=True, files=sorted(cached.get('files') or {}))
+                return {**project.to_ref(), **cached, 'cached': True}
 
         work = Path(tempfile.mkdtemp(prefix='podcast_studio_'))
         files: dict[str, str] = {}
@@ -366,8 +409,7 @@ class IInstance(IInstanceBase):
             logo_cfg = assets.get('logo') if isinstance(assets.get('logo'), dict) else None
             logo_path = self._studio_asset(store, logo_cfg, 'logo', warnings_out)
             music_cfg = assets.get('music') if isinstance(assets.get('music'), dict) else None
-            music_path = self._studio_asset(store, music_cfg, 'music', warnings_out) if mode != 'preview' or rng else None
-            hashed = spec_hash(spec)
+            music_path = self._studio_asset(store, music_cfg, 'music', warnings_out) if tier['music'] else None
             export_dir = f'studio/v{version}'
 
             # ---- picture: resumable ~5 minute parts, each with its own captions
@@ -375,10 +417,10 @@ class IInstance(IInstanceBase):
             audio_pieces: list[dict] = []
             lead_ms = tail_ms = 0
             if has_video:
-                intro = self._studio_asset(store, assets.get('intro'), 'intro', warnings_out) if mode == 'export' else None
-                outro = self._studio_asset(store, assets.get('outro'), 'outro', warnings_out) if mode == 'export' else None
-                title_card = assets.get('title_card') if (mode == 'export' and isinstance(assets.get('title_card'), dict)) else None
-                end_card = assets.get('end_card') if (mode == 'export' and isinstance(assets.get('end_card'), dict)) else None
+                intro = self._studio_asset(store, assets.get('intro'), 'intro', warnings_out) if tier['cards'] else None
+                outro = self._studio_asset(store, assets.get('outro'), 'outro', warnings_out) if tier['cards'] else None
+                title_card = assets.get('title_card') if (tier['cards'] and isinstance(assets.get('title_card'), dict)) else None
+                end_card = assets.get('end_card') if (tier['cards'] and isinstance(assets.get('end_card'), dict)) else None
 
                 if intro:
                     part = render_asset_part(intro, work / 'lead-intro.mp4', out_w, out_h, fps=fps, crf=crf,
@@ -493,7 +535,7 @@ class IInstance(IInstanceBase):
                 files['episode'] = write_file(store, project.exports(f'{export_dir}/{out_name}'), final)
                 if has_video:
                     for extra in extras:
-                        ew, eh = aspect_dims(extra, 1080)
+                        ew, eh = aspect_dims(extra, min(out_w, out_h))
                         alt = transcode_aspect(final, work / f"episode-{str(extra).replace(':', 'x')}.mp4", ew, eh,
                                                fps=fps, crf=crf, preset=x264, fit=fit, background=background)
                         files[f"episode_{str(extra).replace(':', 'x')}"] = write_file(
@@ -524,16 +566,18 @@ class IInstance(IInstanceBase):
                                chapters_payload(chapters, total_ms))
                     files['chapters_json'] = project.exports(f'{export_dir}/chapters.json')
             else:
-                name = f"range-v{version}" if rng else f"rough-v{version}"
-                suffix = 'mp4' if has_video else 'mp3'
-                files['preview'] = write_file(store, project.previews(f'studio/{name}.{suffix}'), final)
+                files['preview'] = write_file(
+                    store, project.previews(f'studio/{preview_name}.{preview_suffix}'), final)
                 chapters = []
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
         seconds = round(time.time() - self._t0, 1)
+        detail = quality_block(tier['tier'], check, crf=crf, preset=x264, channels=channels,
+                               source_width=media.get('width'), source_height=media.get('height'),
+                               fps=fps, width=out_w, height=out_h)
         report = build_studio_report(
-            mode=mode, quality=quality, version=version, title=spec.get('title'), check=check,
+            mode=mode, quality=quality, detail=detail, version=version, title=spec.get('title'), check=check,
             measured=loudness, measurements=measurements, target_lufs=target_lufs, mastered=bool(master),
             rng=rng, preview_output_start_ms=offset_ms, total_ms=total_ms, body_ms=body_ms,
             lead_ms=lead_ms, tail_ms=tail_ms, files=files, aspect=aspect,
@@ -542,6 +586,8 @@ class IInstance(IInstanceBase):
             caption_lines=len(groups) if captions_on else 0, chapters=chapters, music=bool(music_path),
             expect_video=has_video, parts=part_times, spec_hash=hashed, warnings=warnings_out,
             seconds=seconds)
+        report['cached'] = False
+        report['brand'] = {k: brand.get(k) for k in ('id', 'revision', 'hash')} if brand else None
         if mode == 'export':
             write_json(store, project.exports(f'{export_dir}/report.json'), report)
             try:
@@ -553,7 +599,7 @@ class IInstance(IInstanceBase):
             except Exception as exc:  # noqa: BLE001
                 warning(f'{NODE}: studio registry: {exc}')
         else:
-            write_json(store, project.previews(f"studio/{'range' if rng else 'rough'}-v{version}.json"), report)
+            write_json(store, project.previews(f'studio/{preview_name}.json'), report)
 
         update_status(store, project, NODE, 'rendered', pipe, mode='studio', quality=quality, version=version,
                       files=sorted(files), seconds=seconds)
@@ -586,14 +632,28 @@ class IInstance(IInstanceBase):
 
     def _studio_ass(self, path: Path, groups: list, out_w: int, out_h: int, preset: str,
                     style: dict, speaker_colors: dict):
+        """The episode's captions: the studio's own style record, read as a CaptionStyle."""
         if not groups:
             return None
-        text = build_ass(groups, caption_layout_for(out_w, out_h), preset)
-        text = restyle_ass(text, style)
-        if style.get('per_speaker_colors') and speaker_colors:
-            text = colour_dialogue(text, [speaker_colors.get((g[0] or {}).get('speaker')) for g in groups])
+        resolved = resolve_caption_style({**(style or {}), 'preset': (style or {}).get('preset') or preset})
+        text = build_ass(groups, caption_layout_for(out_w, out_h), style=resolved,
+                         speaker_colors=speaker_colors if resolved['speaker_colors'] else None)
         path.write_text(text, encoding='utf-8')
         return path
+
+    def _cached_studio(self, store, project: Project, name: str, suffix: str, hashed: str, tier: str, rng):
+        """
+        The report of an identical preview that is already on disk: same spec
+        hash, same tier, same range — and the file it describes still there.
+        """
+        try:
+            if not exists(store, project.previews(f'studio/{name}.{suffix}')):
+                return None
+            report = read_json_or(store, project.previews(f'studio/{name}.json'), None)
+        except Exception as exc:  # noqa: BLE001
+            warning(f'{NODE}: studio cache: {exc}')
+            return None
+        return report if preview_cache_hit(report, hashed, tier, rng) else None
 
     def _studio_manifest(self, store, project: Project, export_dir: str, hashed: str, parts: list[dict], mode: str):
         """parts/manifest.json — which parts of THIS spec are already finished."""

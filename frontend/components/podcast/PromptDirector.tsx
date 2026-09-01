@@ -432,7 +432,7 @@ export default function PromptDirector({
       {spec && draft && (
         <div className="rr-enter mt-4 rounded-md border border-line bg-surface-overlay/50 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-medium text-ink-dim">Here is the plan — click a chip to change it</span>
+            <span className="text-xs font-medium text-ink-dim">What this request asks for — click a chip to change it</span>
             <span className="truncate font-mono text-[11px] text-ink-faint" title="The phrase used to search the transcript">
               “{draft.searchQuery}”
             </span>
@@ -493,7 +493,8 @@ export default function PromptDirector({
           </div>
           {active && (
             <div key={active.request_id} className="rr-enter mt-3 rounded-md border border-line p-3">
-              <p className="text-sm text-ink">&ldquo;{active.prompt}&rdquo;</p>
+              <p className="rr-eyebrow">This request</p>
+              <p className="mt-1 text-sm text-ink">&ldquo;{active.prompt}&rdquo;</p>
               {active.summary && <p className="mt-1 text-xs text-ink-faint">{active.summary}</p>}
               {active.status === "error" && active.error && (
                 <div className="mt-2 flex items-start gap-2 rounded-md bg-danger/10 px-3 py-2 text-xs text-danger">

@@ -19,7 +19,7 @@ export const SILENCE_POLICIES = ["tighten", "keep"] as const;
 export const ASPECT_RATIOS = ["9:16", "16:9", "1:1", "4:5"] as const;
 export const CAPTION_PRESETS = ["classic", "yellow-bold", "white-outline", "minimal", "off"] as const;
 export const EXCLUDABLE_CONTENT = ["profanity", "sponsor", "housekeeping", "names", "numbers"] as const;
-export const RENDERABLE_ASPECTS: Record<string, string> = { "9:16": "vertical", "16:9": "wide" };
+export const RENDERABLE_ASPECTS: Record<string, string> = { "9:16": "vertical", "4:5": "vertical", "1:1": "vertical", "16:9": "wide" };
 
 export type DurationMode = (typeof DURATION_MODES)[number];
 export type FillerPolicy = (typeof FILLER_POLICIES)[number];
@@ -340,7 +340,7 @@ export function normalizeSpec(raw: unknown, defaults: { count?: number; target_s
     youtube: "16:9",
     square: "1:1",
   });
-  if (!RENDERABLE_ASPECTS[aspect]) warnings.push(`${aspect} exports arrive with Brand Studio (phase 3) — rendering 9:16 for now.`);
+  if (!RENDERABLE_ASPECTS[aspect]) warnings.push(`${aspect} isn't a shape we can render — using 9:16 for now.`);
 
   let captionRaw: unknown = data.caption_preset ?? data.captions;
   if (captionRaw && typeof captionRaw === "object") {

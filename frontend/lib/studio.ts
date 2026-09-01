@@ -158,6 +158,8 @@ export interface EpisodeEdits {
   title: string;
   suggestions: SuggestionChoices;
   versions: EditsVersion[];
+  /** Applied brand template ({id, revision, hash, resolved}). Absent in older files. */
+  brand?: Record<string, unknown> | null;
   /** Respelled words (display + captions only). Absent in older files. */
   corrections: Correction[];
 }
@@ -301,6 +303,11 @@ export interface StudioLoudness {
 
 /** exports/studio/v<n>/report.json (also answered on the results lane). */
 export interface StudioReport {
+  /** Milliseconds of intro/title-card before the edit timeline in this file. */
+  lead_ms?: number;
+  /** The render's measured quality block (tier, dimensions, fps, crf, …). */
+  quality?: Record<string, unknown> | null;
+  cached?: boolean;
   episode_id: string;
   mode: "preview" | "export";
   version: number | null;
@@ -599,6 +606,7 @@ export function normalizeEdits(raw: unknown, fallbackDurationMs = 0, now: number
     suggestions: { mode, accepted: strList(sugRaw.accepted), rejected: strList(sugRaw.rejected), reviewed: strList(sugRaw.reviewed) },
     versions,
     corrections: normalizeCorrections(r.corrections),
+    brand: r.brand && typeof r.brand === "object" ? (r.brand as Record<string, unknown>) : undefined,
   };
 }
 
@@ -763,6 +771,9 @@ export function toStudioReport(raw: unknown): StudioReport {
     has_audio: typeof m.has_audio === "boolean" ? m.has_audio : undefined,
     has_video: typeof m.has_video === "boolean" ? m.has_video : undefined,
     captions: typeof m.captions === "boolean" ? m.captions : undefined,
+    quality: m.quality && typeof m.quality === "object" ? (m.quality as Record<string, unknown>) : null,
+    cached: m.cached === true,
+    lead_ms: ms(m.lead_ms) || undefined,
     loudness:
       "integrated_lufs" in loud
         ? { integrated_lufs: num(loud.integrated_lufs), true_peak_dbtp: num(loud.true_peak_dbtp), loudness_range_lu: num(loud.loudness_range_lu) }

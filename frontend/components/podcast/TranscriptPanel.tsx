@@ -21,6 +21,8 @@ export default function TranscriptPanel({
   onOpen,
   onMakeClip,
   onSeek,
+  actionLabel = "Make this a clip",
+  startOpen = false,
 }: {
   sentences: Sentence[] | null;
   loading: boolean;
@@ -28,8 +30,11 @@ export default function TranscriptPanel({
   onOpen: () => void;
   onMakeClip: (start_ms: number, end_ms: number) => void;
   onSeek?: (ms: number) => void;
+  /** what the button on a two-click selection says */
+  actionLabel?: string;
+  startOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(startOpen);
   const [sel, setSel] = useState<{ first: number | null; last: number | null }>({ first: null, last: null });
   const [query, setQuery] = useState("");
   const [matchIdx, setMatchIdx] = useState(0);
@@ -210,7 +215,7 @@ export default function TranscriptPanel({
                           }}
                           className="rr-btn rr-btn-primary rr-btn-sm"
                         >
-                          <Scissors className="h-3.5 w-3.5" /> Make this a clip
+                          <Scissors className="h-3.5 w-3.5" /> {actionLabel}
                         </button>
                       </>
                     ) : (

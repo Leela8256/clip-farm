@@ -6,7 +6,7 @@ import { analysisStep, describeStatus, fmtTime, type StatusEvent } from "@/lib/p
 
 const STEPS = ["Upload", "Transcribe", "Score", "Ready"] as const;
 
-/** describeStatus() speaks in backend terms; the studio speaks in the producer's. */
+/** describeStatus() speaks in machine terms; this screen speaks in the producer's. */
 const PLAIN: [RegExp, string][] = [
   [/^Waiting for the engine$/i, "Getting ready"],
   [/^Cutting the audio into pieces for the transcriber$/i, "Preparing the audio"],
@@ -16,7 +16,7 @@ const PLAIN: [RegExp, string][] = [
   [/^Transcript index ready.*$/i, "Transcript search ready"],
   [/(\d+) candidates ready/i, "$1 moments ready"],
   [/\bClaude\b/g, "The director"],
-  [/\bengine\b/gi, "studio"],
+  [/\bengine\b/gi, "your library"],
   [/\bpipeline\b/gi, "analysis"],
   [/\bpodcast_/g, ""],
 ];

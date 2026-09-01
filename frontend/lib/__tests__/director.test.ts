@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  RENDERABLE_ASPECTS,
   applyRevision,
   buildDirectQuestion,
   buildParseQuestion,
@@ -78,7 +79,8 @@ describe("normalizeSpec", () => {
     expect(spec.filler_policy).toBe("smart");
     expect(spec.exclude_subjects).toEqual(["politics"]);
     const joined = spec.warnings.join(" ");
-    for (const needle of ["clamped", "swapped", "Strict", "phase 3", "filler policy", "excluded subject"]) expect(joined).toContain(needle);
+    for (const needle of ["clamped", "swapped", "Strict", "filler policy", "excluded subject"]) expect(joined).toContain(needle);
+    expect(spec.aspect_ratio in RENDERABLE_ASPECTS).toBe(true);
   });
 
   it("understands units, maximum mode and empty input", () => {

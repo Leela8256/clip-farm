@@ -6,14 +6,18 @@ import { useSearchParams } from "next/navigation";
 import { Clapperboard, ExternalLink, Loader2, RefreshCw, TriangleAlert, Users } from "lucide-react";
 import {
   analyzeClipAudio,
+  type ClipRequest,
   createRequest,
   getConnectionState,
+  getQueuedSaveState,
   getRun,
   listDir,
   mediaUrl,
   type AudioProof,
   type ParsedPrompt,
+  type QueuedSaveState,
   readJsonOr,
+  readJsonStrict,
   runAnalysis,
   runClip,
   runDirector,
@@ -23,8 +27,10 @@ import {
   runRevise,
   runVisualScan,
   type RunState,
+  saveJsonQueued,
   startRun,
   subscribeConnection,
+  subscribeQueuedSave,
   subscribeRun,
   writeJson,
 } from "@/lib/engine";
@@ -57,6 +63,9 @@ import CandidateCard from "@/components/podcast/CandidateCard";
 import ClipWorkbench, { type ExportLink } from "@/components/podcast/ClipWorkbench";
 import TranscriptPanel from "@/components/podcast/TranscriptPanel";
 import PromptDirector from "@/components/podcast/PromptDirector";
+import JourneyStrip from "@/components/podcast/JourneyStrip";
+import { loadTemplates, stableJson, type BrandTemplate } from "@/lib/brand";
+import { applyTemplate, effectiveRender, previewBehindEdits, styleOf, type StyledEdit } from "@/components/podcast/clip-style";
 
 const serverState = () => "idle" as const;
 const serverRun = () => undefined;
@@ -76,15 +85,25 @@ function runSnapshot(key: string): RunState | undefined {
 }
 const NUDGE_MS = 200;
 const MIN_CLIP_MS = 1000;
+const AUTOSAVE_MS = 1200;
+const EMPTY_EDITS: ClipEdits = { schema_version: 2, clips: {} };
+const QUEUE_IDLE: QueuedSaveState = { saving: false, queued: false, savedAt: null, error: null };
+const serverQueue = () => QUEUE_IDLE;
+
+/** What a clip render is asked for, including the look the renderer stamps on. */
+type ClipRenderRequest = ClipRequest & { aspect?: string; caption_style?: unknown; brand?: unknown };
 
 type Reports = Record<string, { preview?: RenderReport; export?: RenderReport }>;
 type Tab = "direct" | "moments" | "transcript";
 
 const TABS: { key: Tab; label: string }[] = [
-  { key: "direct", label: "Direct" },
-  { key: "moments", label: "Moments" },
+  { key: "direct", label: "Describe clips" },
+  { key: "moments", label: "Moments found" },
   { key: "transcript", label: "Transcript" },
 ];
+
+/** A request's own words, short enough for a group heading. */
+const shortPrompt = (text: string) => (text.length > 72 ? `${text.slice(0, 71).trimEnd()}…` : text);
 
 const EXPORT_LABELS: [string, string][] = [
   ["vertical", "Vertical 9:16"],
@@ -96,6 +115,7 @@ const EXPORT_LABELS: [string, string][] = [
 ];
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
 
 /** Static-export friendly route: /episode?id=<episode>. useSearchParams needs a Suspense boundary. */
 export default function EpisodePage() {
@@ -142,9 +162,14 @@ function EpisodeWorkspace() {
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
   const [chapters, setChapters] = useState<ReturnType<typeof toChapters>>([]);
   const [status, setStatus] = useState<StatusEvent | null>(null);
-  const [edits, setEdits] = useState<ClipEdits>({ schema_version: 2, clips: {} });
-  const [savedEdits, setSavedEdits] = useState<ClipEdits>({ schema_version: 2, clips: {} });
+  const [edits, setEdits] = useState<ClipEdits>(EMPTY_EDITS);
+  const [savedEdits, setSavedEdits] = useState<ClipEdits>(EMPTY_EDITS);
+  const [editsError, setEditsError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
   const [reports, setReports] = useState<Reports>({});
+  const [plans, setPlans] = useState<Record<string, ClipPlan>>({});
+  const [templates, setTemplates] = useState<BrandTemplate[] | null>(null);
+  const [templatesError, setTemplatesError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sentences, setSentences] = useState<Sentence[] | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
@@ -172,11 +197,20 @@ function EpisodeWorkspace() {
   const [revising, setRevising] = useState(false);
   const [revisionNote, setRevisionNote] = useState<string | null>(null);
   const [prefill, setPrefill] = useState<string | undefined>(undefined);
-  // studio layout
+  // workspace layout
   const [tabChoice, setTabChoice] = useState<Tab | null>(null);
   const [currentMs, setCurrentMs] = useState(0);
   const [seekTo, setSeekTo] = useState<number | undefined>(undefined);
   const asideRef = useRef<HTMLElement>(null);
+
+  // the clip edits save queue: one write at a time, newest value wins
+  const queueKey = `clip-edits:${id}`;
+  const subscribeToSave = useCallback((fn: () => void) => subscribeQueuedSave(queueKey, fn), [queueKey]);
+  const readSave = useCallback(() => getQueuedSaveState(queueKey), [queueKey]);
+  const saveQueue = useSyncExternalStore(subscribeToSave, readSave, serverQueue);
+  const blocked = editsError != null;
+  const blockedRef = useRef(false);
+  const editsRef = useRef(edits);
 
   // live analysis run started from the home page (or here); runKey() is only called inside callbacks, never during render
   const subscribeToRun = useCallback((fn: () => void) => subscribeRun(runKey(id), fn), [id]);
@@ -212,7 +246,8 @@ function EpisodeWorkspace() {
       readJsonOr<unknown>(`${root}/analysis/candidates.json`, null),
       readJsonOr<unknown>(`${root}/analysis/chapters.json`, null),
       readJsonOr<StatusEvent | null>(`${root}/status.json`, null),
-      readJsonOr<ClipEdits | null>(`${root}/edits/clip-edits.json`, null),
+      // fail-closed: a file that could not be opened must never look like an empty one
+      readJsonStrict<ClipEdits>(`${root}/edits/clip-edits.json`),
       loadRequests(),
     ]);
     const list = toCandidates(cands);
@@ -220,29 +255,40 @@ function EpisodeWorkspace() {
     setRequests(reqs);
     setChapters(toChapters(chaps));
     setStatus(st);
-    const loadedEdits = ed && typeof ed === "object" ? { schema_version: 2, clips: ed.clips ?? {} } : { schema_version: 2, clips: {} };
-    setEdits(loadedEdits);
-    setSavedEdits(loadedEdits);
-    // hand-made clips live only in the edits file
-    const known = new Set([...list.map((c) => c.id), ...reqs.flatMap((r) => (r.candidates ?? []).map((c) => c.id))]);
-    setCustoms(
-      Object.entries(loadedEdits.clips)
-        .filter(([key, e]) => key.startsWith("x") && e.start_ms != null && e.end_ms != null && !known.has(key))
-        .map(([key, e]) => ({ ...customCandidate(e.start_ms!, e.end_ms!, e.title), id: key }))
-    );
-    // render reports for clips the library already has
+    if (!ed.ok && !ed.missing) {
+      // the changes on file are unknown, so nothing here may be changed or written
+      setEditsError(ed.error || "The clip changes could not be opened.");
+    } else {
+      setEditsError(null);
+      const value = ed.ok ? ed.value : null;
+      const loadedEdits: ClipEdits = value && typeof value === "object" ? { schema_version: 2, clips: value.clips ?? {} } : EMPTY_EDITS;
+      setEdits(loadedEdits);
+      setSavedEdits(loadedEdits);
+      // hand-made clips live only in the edits file
+      const known = new Set([...list.map((c) => c.id), ...reqs.flatMap((r) => (r.candidates ?? []).map((c) => c.id))]);
+      setCustoms(
+        Object.entries(loadedEdits.clips)
+          .filter(([key, e]) => key.startsWith("x") && e.start_ms != null && e.end_ms != null && !known.has(key))
+          .map(([key, e]) => ({ ...customCandidate(e.start_ms!, e.end_ms!, e.title), id: key }))
+      );
+    }
+    // render reports (and the plan each one was made from) for clips the library already has
     const clips = p.clips ?? {};
     const loaded: Reports = {};
+    const loadedPlans: Record<string, ClipPlan> = {};
     await Promise.all(
       Object.keys(clips).map(async (clipId) => {
-        const [pv, ex] = await Promise.all([
+        const [pv, ex, pl] = await Promise.all([
           clips[clipId].preview ? readJsonOr<unknown>(`${root}/previews/${clipId}.json`, null) : null,
           clips[clipId].export ? readJsonOr<unknown>(`${root}/exports/${clipId}/report.json`, null) : null,
+          clips[clipId].preview ? readJsonOr<ClipPlan | null>(`${root}/analysis/clips/${clipId}/plan.json`, null) : null,
         ]);
         loaded[clipId] = { preview: pv ? toReport(pv) : undefined, export: ex ? toReport(ex) : undefined };
+        if (pl) loadedPlans[clipId] = pl;
       })
     );
     setReports(loaded);
+    setPlans(loadedPlans);
     setSelectedId((current) => current ?? list[0]?.id ?? reqs.flatMap((r) => r.candidates ?? [])[0]?.id ?? null);
   }, [id, root, loadRequests]);
 
@@ -252,7 +298,31 @@ function EpisodeWorkspace() {
     return () => clearTimeout(timer);
   }, [connection, load]);
 
-  // the sidebar's "Clip Studio" item opens the last episode looked at
+  useEffect(() => {
+    editsRef.current = edits;
+    blockedRef.current = blocked;
+  });
+
+  /** The producer's saved brand looks, so a clip can be stamped with one. */
+  useEffect(() => {
+    if (connection !== "connected") return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      loadTemplates()
+        .then((listing) => {
+          if (cancelled) return;
+          setTemplates(listing.templates);
+          setTemplatesError(listing.failed ? listing.error ?? "Your brand looks could not be read." : null);
+        })
+        .catch((e) => !cancelled && setTemplatesError(errorText(e)));
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [connection]);
+
+  // the sidebar's "Create Clips" item opens the last episode looked at
   const loaded = project != null;
   const projectTitle = project?.title;
   useEffect(() => {
@@ -347,6 +417,15 @@ function EpisodeWorkspace() {
     () => (activeRequestId ? requestCandidates.filter((c) => c.request_id === activeRequestId) : requestCandidates),
     [requestCandidates, activeRequestId]
   );
+  /** Directed clips stay with the request that asked for them. */
+  const clipGroups = useMemo(
+    () =>
+      requests
+        .filter((r) => !activeRequestId || r.request_id === activeRequestId)
+        .map((r) => ({ request: r, clips: r.candidates ?? [] }))
+        .filter((g) => g.clips.length > 0),
+    [requests, activeRequestId]
+  );
   const selected = all.find((c) => c.id === selectedId) ?? null;
   const baseEdit: ClipEdit = selected ? edits.clips[selected.id] ?? {} : {};
   const edit = resolveEdit(baseEdit);
@@ -358,8 +437,35 @@ function EpisodeWorkspace() {
   const selectedSpec: RequestSpec | null = selectedRequest?.spec ?? null;
   const activeSpec: RequestSpec | null = (activeRequestId ? requests.find((r) => r.request_id === activeRequestId)?.spec : null) ?? null;
 
-  // the tab: the producer's pick, else "Direct" once there are directed clips, else the auto moments
-  const tab: Tab = tabChoice ?? (requests.length ? "direct" : "moments");
+  /**
+   * Clips whose preview was made before the changes now on screen. The plan a
+   * render was prepared from records what it was made with, so this compares
+   * like with like instead of guessing from timestamps.
+   */
+  const staleIds = useMemo(() => {
+    const out = new Set<string>();
+    for (const cand of all) {
+      const report = reports[cand.id]?.preview;
+      const madeFrom = plans[cand.id];
+      if (!report || !madeFrom) continue;
+      const base = edits.clips[cand.id] ?? {};
+      const effective = resolveEdit(base);
+      const spec = cand.request_id ? requests.find((r) => r.request_id === cand.request_id)?.spec ?? null : null;
+      const now = effectiveRender(effectiveRange(cand, effective), effective as StyledEdit, spec, base.active_version ?? null);
+      if (previewBehindEdits(madeFrom, report, now)) out.add(cand.id);
+    }
+    return out;
+  }, [all, reports, plans, edits, requests]);
+  const selectedStale = selected ? staleIds.has(selected.id) : false;
+
+  // "saved" means exactly this work reached the file: the queue is the only truth
+  const editsSignature = stableJson(edits);
+  const savedSignature = stableJson(savedEdits);
+  const unsaved = editsSignature !== savedSignature;
+  const saving = saveQueue.saving || saveQueue.queued;
+
+  // the tab: the producer's pick, else describing what they want — the prompt comes first
+  const tab: Tab = tabChoice ?? "direct";
   const mapCandidates = tab === "direct" ? directed : tab === "moments" ? [...candidates, ...customs] : all;
 
   // The per-clip details reset and reload when the selection (or its preview) changes.
@@ -382,6 +488,7 @@ function EpisodeWorkspace() {
         const loaded = p ?? (await readJsonOr<ClipPlan | null>(`${root}/analysis/clips/${selected.id}.json`, null));
         if (cancelled) return;
         setPlan(loaded);
+        if (p) setPlans((prev) => ({ ...prev, [selected.id]: p }));
         setPlanCompliance(c ?? previewReport?.compliance ?? selected.compliance ?? null);
       });
       const file = previewFile(previewReport);
@@ -439,25 +546,61 @@ function EpisodeWorkspace() {
 
   // ---- actions ----------------------------------------------------------------
 
-  const patchEdit = (clipId: string, patch: ClipEdit) =>
+  const patchEdit = (clipId: string, patch: StyledEdit) => {
+    if (blockedRef.current) return;
     setEdits((prev) => ({ ...prev, clips: { ...prev.clips, [clipId]: { ...(prev.clips[clipId] ?? {}), ...patch } } }));
-
-  const saveEdits = async (next: ClipEdits = edits) => {
-    await writeJson(`${root}/edits/clip-edits.json`, next);
-    setSavedEdits(next);
   };
 
-  /** The explicit Save button: the other saves (render, versions, new cuts) stay quiet. */
+  /**
+   * One write at a time, newest value wins. Everyone waiting is answered once
+   * the newest value has landed, so "saved" is never claimed early.
+   */
+  const saveEdits = useCallback(
+    async (next: ClipEdits) => {
+      if (blockedRef.current) return;
+      // resolves once this work (or newer work that replaced it) has reached the
+      // file, and the queue answers callers in the order they asked
+      await saveJsonQueued(`clip-edits:${id}`, `${root}/edits/clip-edits.json`, next);
+      setSavedEdits(next);
+    },
+    [id, root]
+  );
+
+  /** The explicit Save button: the other saves (autosave, render, versions) stay quiet. */
   const saveNow = async () => {
     try {
-      await saveEdits();
-      toast("Edits saved", "ok");
+      await saveEdits(editsRef.current);
+      toast("Your changes are saved", "ok");
     } catch (e) {
-      toast(`Couldn't save the edits: ${errorText(e)}`, "warn");
+      toast(`Couldn't save your changes: ${errorText(e)}`, "warn");
     }
   };
 
+  /** Everything is kept for you a moment after you stop changing things. */
+  useEffect(() => {
+    if (!unsaved || blocked) return;
+    const timer = setTimeout(() => void saveEdits(editsRef.current).catch(() => {}), AUTOSAVE_MS);
+    return () => clearTimeout(timer);
+  }, [unsaved, blocked, editsSignature, saveEdits]);
+
+  const retryEdits = async () => {
+    setRetrying(true);
+    try {
+      await load();
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  /** Stamp a saved brand onto this clip; anything the producer chose by hand stays. */
+  const applyBrand = (template: BrandTemplate) => {
+    if (!selected) return;
+    patchEdit(selected.id, applyTemplate(template, (edits.clips[selected.id] ?? {}) as StyledEdit));
+    toast(`${template.name} applied to this clip`, "ok");
+  };
+
   const resetEdit = (clipId: string) => {
+    if (blockedRef.current) return;
     setEdits((prev) => {
       const clips = { ...prev.clips };
       const custom = customs.find((c) => c.id === clipId);
@@ -478,30 +621,35 @@ function EpisodeWorkspace() {
   };
 
   const render = async (kind: "preview" | "export", cand: Candidate) => {
-    if (busy[cand.id]) return;
+    if (busy[cand.id] || blockedRef.current) return;
     const current = edits.clips[cand.id] ?? {};
     if (JSON.stringify(current) !== JSON.stringify(savedEdits.clips[cand.id] ?? {})) await saveEdits(edits);
-    const effective = resolveEdit(current);
+    const effective = resolveEdit(current) as StyledEdit;
     const explicit = cand.custom || effective.start_ms != null || effective.end_ms != null;
     const r = effectiveRange(cand, effective);
+    const look = styleOf(effective);
     setBusy((b) => ({ ...b, [cand.id]: kind }));
     setJobEvents((j) => ({ ...j, [cand.id]: [] }));
     setJobError((j) => ({ ...j, [cand.id]: null }));
     try {
-      const report = await runClip(
-        kind,
-        id,
-        {
-          clipId: cand.id,
-          start_ms: explicit ? r.start_ms : undefined,
-          end_ms: explicit ? r.end_ms : undefined,
-          title: effective.title ?? (cand.custom ? cand.title : undefined),
-          captions: captionPresetOf(effective, ""),
-        },
-        (evt) => setJobEvents((j) => ({ ...j, [cand.id]: [...(j[cand.id] ?? []), evt] }))
-      );
+      // the look travels with the render: the shape, the caption style and the
+      // brand snapshot the clip was stamped with
+      const request: ClipRenderRequest = {
+        clipId: cand.id,
+        start_ms: explicit ? r.start_ms : undefined,
+        end_ms: explicit ? r.end_ms : undefined,
+        title: effective.title ?? (cand.custom ? cand.title : undefined),
+        captions: captionPresetOf(effective, ""),
+        aspect: look.aspect,
+        caption_style: look.caption_style,
+        brand: look.brand,
+      };
+      const report = await runClip(kind, id, request, (evt) => setJobEvents((j) => ({ ...j, [cand.id]: [...(j[cand.id] ?? []), evt] })));
       if (report.error) throw new Error(report.error);
       setReports((prev) => ({ ...prev, [cand.id]: { ...(prev[cand.id] ?? {}), [kind]: report } }));
+      // the plan this render was prepared from is what "behind your edits" compares against
+      const madeFrom = await readJsonOr<ClipPlan | null>(`${root}/analysis/clips/${cand.id}/plan.json`, null);
+      if (madeFrom) setPlans((prev) => ({ ...prev, [cand.id]: madeFrom }));
       toast(kind === "preview" ? "Preview ready" : "Export ready", "ok");
       const p = await readJsonOr<Project | null>(`${root}/project.json`, null);
       if (p) setProject({ ...p, episode_id: p.episode_id || id });
@@ -655,7 +803,7 @@ function EpisodeWorkspace() {
     }
   };
 
-  // ---- studio interaction ---------------------------------------------------------
+  // ---- workspace interaction ------------------------------------------------------
 
   const selectTab = (next: Tab) => {
     setTabChoice(next);
@@ -753,11 +901,14 @@ function EpisodeWorkspace() {
 
   // ---- render -----------------------------------------------------------------
 
+  // where the work has got to, for the journey along the top
+  const journeyStep = exportReport ? 5 : previewReport ? 4 : selected ? 3 : all.length > 0 ? 2 : analysed ? 1 : 0;
+
   const liveEvents = run?.events ?? [];
   const latest = liveEvents[liveEvents.length - 1] ?? status;
   const liveRun = run != null && !run.done;
   const showStepper = analysing || !!run?.error || (latest?.stage === "error" && !analysed);
-  const studioOpen = analysed || all.length > 0;
+  const workspaceOpen = analysed || all.length > 0;
   const visual = project?.visual;
 
   const row = (cand: Candidate) => (
@@ -767,6 +918,7 @@ function EpisodeWorkspace() {
       selected={cand.id === selectedId}
       hasPreview={!!reports[cand.id]?.preview}
       hasExport={!!reports[cand.id]?.export}
+      stale={staleIds.has(cand.id)}
       busy={busy[cand.id] ?? null}
       onSelect={() => select(cand.id)}
       onPreview={() => {
@@ -785,8 +937,8 @@ function EpisodeWorkspace() {
       <div className="rr-card rr-enter mx-auto mt-10 max-w-md px-6 py-12 text-center">
         <p className="rr-h3">We can&apos;t find that episode</p>
         <p className="mt-1 text-sm text-ink-faint">It may have been removed from your library.</p>
-        <Link href="/history" className="rr-btn rr-btn-primary mt-5">
-          Open History
+        <Link href="/projects" className="rr-btn rr-btn-primary mt-5">
+          Open my projects
         </Link>
       </div>
     );
@@ -819,7 +971,7 @@ function EpisodeWorkspace() {
       {/* header */}
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
-          <p className="rr-eyebrow">Clip Studio</p>
+          <p className="rr-eyebrow">Create Clips</p>
           <h1 className="rr-h2 mt-1 truncate" title={project.title || project.source.split("/").pop() || id}>
             {prettyTitle(project.title || id)}
           </h1>
@@ -902,7 +1054,26 @@ function EpisodeWorkspace() {
         </div>
       )}
 
-      {studioOpen && (
+      {blocked && (
+        <div className="rr-enter flex flex-wrap items-center gap-3 rounded-md border border-processing/40 bg-processing/10 px-3.5 py-2.5 text-sm text-ink">
+          <TriangleAlert className="h-4 w-4 shrink-0 text-processing" />
+          <span className="min-w-0 flex-1">
+            We couldn&apos;t open your changes to these clips just now, so editing is paused — nothing will be written over them.
+          </span>
+          <button type="button" onClick={() => void retryEdits()} disabled={retrying} className="rr-btn rr-btn-sm">
+            {retrying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Try again
+          </button>
+        </div>
+      )}
+
+      {workspaceOpen && (
+        <div className="rr-enter flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-md border border-line bg-surface-raised px-3.5 py-2">
+          <JourneyStrip step={journeyStep} onGo={(i) => selectTab(i === 1 ? "direct" : "moments")} />
+          <span className="text-[11px] text-ink-faint">{saving ? "saving…" : unsaved ? "changes not saved yet" : "changes saved"}</span>
+        </div>
+      )}
+
+      {workspaceOpen && (
         <section className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
           {/* left: map, tabs, lists */}
           <div className="min-w-0 space-y-4">
@@ -910,7 +1081,7 @@ function EpisodeWorkspace() {
               <ChapterStrip chapters={chapters} candidates={mapCandidates} durationMs={durationMs} selectedId={selectedId} onSelect={select} currentMs={currentMs} onSeek={seek} />
             )}
 
-            <div role="tablist" aria-label="Studio sections" onKeyDown={onTabKey} className="flex flex-wrap items-center gap-1.5">
+            <div role="tablist" aria-label="Ways to find clips" onKeyDown={onTabKey} className="flex flex-wrap items-center gap-1.5">
               {TABS.map((t) => {
                 const active = t.key === tab;
                 const count = t.key === "direct" ? requestCandidates.length : t.key === "moments" ? candidates.length + customs.length : 0;
@@ -956,19 +1127,28 @@ function EpisodeWorkspace() {
                     canRun={connection === "connected" && !analysing}
                     prefill={prefill}
                   />
-                  {directed.length > 0 && (
-                    <section className="space-y-3">
-                      <h3 className="rr-h3">
-                        {directed.length} directed clip{directed.length === 1 ? "" : "s"}
-                        {activeRequestId ? (
-                          <span className="ml-2 text-sm font-normal text-ink-faint">· this request</span>
-                        ) : requests.length > 1 ? (
-                          <span className="ml-2 text-sm font-normal text-ink-faint">· {requests.length} requests</span>
-                        ) : null}
-                      </h3>
-                      <Rows list={directed}>{row}</Rows>
+                  {clipGroups.map((group) => (
+                    <section key={group.request.request_id} className="space-y-2.5">
+                      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+                        <h3 className="rr-h3">
+                          {group.clips.length} clip{group.clips.length === 1 ? "" : "s"} for
+                        </h3>
+                        <span className="min-w-0 flex-1 truncate text-sm text-ink-dim" title={group.request.prompt}>
+                          &ldquo;{shortPrompt(group.request.prompt)}&rdquo;
+                        </span>
+                        {requests.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => selectRequest(activeRequestId === group.request.request_id ? null : group.request.request_id)}
+                            className="rr-btn rr-btn-ghost rr-btn-sm"
+                          >
+                            {activeRequestId === group.request.request_id ? "Show every request" : "Only this request"}
+                          </button>
+                        )}
+                      </div>
+                      <Rows list={group.clips}>{row}</Rows>
                     </section>
-                  )}
+                  ))}
                   {activeRequestId && directed.length === 0 && directorBusy !== "directing" && (
                     <p className="rounded-md border border-dashed border-line-strong px-4 py-5 text-center text-sm text-ink-faint">Nothing met that request. Loosen it and run it again.</p>
                   )}
@@ -1051,9 +1231,15 @@ function EpisodeWorkspace() {
                 audioProof={audioProof}
                 busy={busy[selected.id] ?? null}
                 events={jobEvents[selected.id] ?? []}
-                error={jobError[selected.id] ?? null}
+                error={jobError[selected.id] ?? previewReport?.error ?? exportReport?.error ?? null}
                 revising={revising}
                 revisionNote={revisionNote}
+                stale={selectedStale}
+                blocked={blocked}
+                saving={saving}
+                templates={templates}
+                templatesError={templatesError}
+                onApplyTemplate={applyBrand}
                 onEdit={(patch) => patchEdit(selected.id, patch)}
                 onSave={() => void saveNow()}
                 onReset={() => resetEdit(selected.id)}

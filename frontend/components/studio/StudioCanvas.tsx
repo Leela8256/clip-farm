@@ -162,6 +162,9 @@ export default function StudioCanvas({
   const style = edits.visual?.caption_style;
   const captionsOn = edits.visual?.captions !== false;
   const logo = edits.assets?.logo;
+  // captions and the logo are drawn over the recording here for the sense of it;
+  // the real thing is burned in when a version is made
+  const overlays = !watchingPreview && ((captionsOn && !!caption) || (!!logoUrl && !!logo));
 
   return (
     <section className="rr-card rr-enter overflow-hidden">
@@ -214,7 +217,7 @@ export default function StudioCanvas({
             </span>
           ) : (
             <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-black/55 px-2.5 text-xs text-white">
-              <Scissors className="h-3 w-3" /> Playing your edit
+              <Scissors className="h-3 w-3" /> Instant playback
             </span>
           )}
         </div>
@@ -224,14 +227,16 @@ export default function StudioCanvas({
         <p className="rr-mono text-ink-faint">
           {fmtPosition(currentMs)}
           <span className="ml-2 text-[11px] normal-case tracking-normal text-ink-faint">
-            {watchingPreview ? "finished look" : "removed parts are skipped as it plays"}
-            {approximate ? " · positions are close until a preview is made" : ""}
+            {watchingPreview
+              ? "the version that was made"
+              : `removed parts are skipped as it plays${overlays ? " · captions and logo are a rough guide here" : ""}`}
+            {!watchingPreview && approximate ? " · positions are close until a preview is made" : ""}
           </span>
         </p>
         {previewUrl ? (
           <div className="flex items-center gap-1">
             <button type="button" onClick={() => setShowPreview(false)} className="rr-chip" data-active={!watchingPreview}>
-              Your edit
+              Instant playback
             </button>
             <button
               type="button"

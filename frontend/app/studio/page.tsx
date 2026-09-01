@@ -33,6 +33,7 @@ import {
   rejectSuggestion,
   removeCorrection,
   removeOperation,
+  removeSection,
   renameSpeaker,
   setSuggestionMode,
   splitSection,
@@ -83,13 +84,38 @@ import {
 import StudioCanvas, { type AuditionRequest } from "@/components/studio/StudioCanvas";
 import TimelineBar from "@/components/studio/TimelineBar";
 import TranscriptEditor, { type Range } from "@/components/studio/TranscriptEditor";
-import Inspector, { type DownloadLink, type JobKind } from "@/components/studio/Inspector";
+import Inspector, { type DownloadLink, type ExportSize, type JobKind } from "@/components/studio/Inspector";
 import SuggestionsPanel from "@/components/studio/SuggestionsPanel";
 import ProposalPanel from "@/components/studio/ProposalPanel";
 import VersionDialog from "@/components/studio/VersionDialog";
-import { INIT_STEPS, applySummary, buildTranscript, initStep, markWords, rowAt, studioProgress, useJob } from "@/components/studio/helpers";
+import {
+  INIT_STEPS,
+  WORKFLOW_STEPS,
+  applySummary,
+  buildTranscript,
+  initStep,
+  loadRenderQuality,
+  markWords,
+  qualityOfReport,
+  rowAt,
+  studioProgress,
+  useJob,
+  type RenderQuality,
+} from "@/components/studio/helpers";
+import { applyBrand, describeApply, listBrandTemplates, type BrandTemplate } from "@/components/studio/brand";
 
 const serverState = () => "idle" as const;
+
+/**
+ * How big the finished episode is made travels to the render as one more line
+ * of context. The studio's export call takes the episode and a progress handler
+ * today and grows an options argument for the size; until it carries one, the
+ * choice is not offered as though it worked (exports are 1080p) — see the
+ * wiring note in the studio's engine module.
+ */
+type ExportCall = (episodeId: string, onProgress?: (evt: StatusEvent) => void, options?: { size?: ExportSize }) => Promise<StudioReport>;
+const exportEpisode = runStudioExport as unknown as ExportCall;
+const EXPORT_SIZE_READY = runStudioExport.length >= 3;
 const RANGE_PAD_MS = 20_000;
 const AUTOSAVE_MS = 2000;
 const SAVE_TOAST_MS = 60_000;
@@ -176,10 +202,16 @@ function StudioWorkspace() {
   const [busy, setBusy] = useState<JobKind | null>(null);
   const [progress, setProgress] = useState("");
   const [reports, setReports] = useState<Partial<Record<JobKind, StudioReport>>>({});
+  const [quality, setQuality] = useState<Partial<Record<JobKind, RenderQuality | null>>>({});
+  const [exportSize, setExportSize] = useState<ExportSize>("1080");
+  const [brands, setBrands] = useState<BrandTemplate[]>([]);
+  const [brandsLoading, setBrandsLoading] = useState(false);
+  const [brandNote, setBrandNote] = useState("");
   const [links, setLinks] = useState<DownloadLink[]>([]);
   const [preview, setPreview] = useState<{ url: string; stamp: string; label: string } | null>(null);
   const [previewKind, setPreviewKind] = useState<"rough" | "range">("rough");
   const [previewRange, setPreviewRange] = useState<[number, number] | null>(null);
+  const [previewLeadMs, setPreviewLeadMs] = useState(0);
   const [spec, setSpec] = useState<PreparedSpec | null>(null);
   const [specTick, setSpecTick] = useState(0);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -267,6 +299,23 @@ function StudioWorkspace() {
     return () => clearTimeout(timer);
   }, [prepareDone, load]);
 
+  // the saved brands, when there are any: applying one only fills in blanks
+  useEffect(() => {
+    if (connection !== "connected") return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      setBrandsLoading(true);
+      listBrandTemplates()
+        .then((list) => !cancelled && setBrands(list))
+        .catch(() => {})
+        .finally(() => !cancelled && setBrandsLoading(false));
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [connection]);
+
   useEffect(() => {
     if (!project?.source || connection !== "connected") return;
     let cancelled = false;
@@ -331,13 +380,14 @@ function StudioWorkspace() {
 
   // the picture and the transcript always talk in recording time; the player converts
   const sourceClock = useMemo<PlaybackClock>(() => (edits ? clockFromSpec(spec, edits, "source") : IDLE_CLOCK), [spec, edits]);
-  const previewClock = useMemo<PlaybackClock>(
-    () =>
-      edits
-        ? clockFromSpec(spec, edits, previewKind === "range" ? "range_preview" : "rough_preview", previewRange ?? undefined)
-        : IDLE_CLOCK,
-    [spec, edits, previewKind, previewRange]
-  );
+  const previewClock = useMemo<PlaybackClock>(() => {
+    if (!edits) return IDLE_CLOCK;
+    const base = clockFromSpec(spec, edits, previewKind === "range" ? "range_preview" : "rough_preview", previewRange ?? undefined);
+    // a standard preview file opens with the intro/title card, so its media time
+    // runs previewLeadMs ahead of the edit timeline — shift through range mode
+    if (previewKind !== "range" && previewLeadMs > 0) return { ...base, mode: "range_preview", rangeOutStartMs: -previewLeadMs };
+    return base;
+  }, [spec, edits, previewKind, previewRange, previewLeadMs]);
 
   /* ---- changing the edit ---------------------------------------------------- */
 
@@ -593,12 +643,19 @@ function StudioWorkspace() {
         const stored = dirty ? await save(current) : current;
         const stamp = editsSignature(stored);
         const range = kind === "range" ? rangeAround() : null;
+        // the whole episode at preview quality, or the chosen stretch as it will
+        // really be — the engine call takes the same two words it always has
         const report =
           kind === "export"
-            ? await runStudioExport(id, onProgress)
+            ? await exportEpisode(id, onProgress, EXPORT_SIZE_READY ? { size: exportSize } : undefined)
             : await runStudioPreview(id, kind === "rough" ? { quality: "rough" } : { quality: "full", range: range ?? rangeAround() }, onProgress);
         if (report.error) throw new Error(report.error);
         setReports((prev) => ({ ...prev, [kind]: report }));
+        // how it actually came out, measured from the file itself
+        setQuality((prev) => ({ ...prev, [kind]: qualityOfReport(report) }));
+        void loadRenderQuality(id, kind, report.version)
+          .then((measured) => measured && setQuality((prev) => ({ ...prev, [kind]: measured })))
+          .catch(() => {});
         const entries = Object.entries(report.files ?? {}).filter(([key]) => key !== "report" && key !== "parts");
         setLinks(
           await Promise.all(
@@ -614,7 +671,8 @@ function StudioWorkspace() {
           const url = await mediaUrl(video[1], report.rendered_at ?? "");
           setPreviewKind(kind === "rough" ? "rough" : "range");
           setPreviewRange(kind === "range" ? range : null);
-          setPreview({ url, stamp, label: kind === "rough" ? "edited preview" : "this part" });
+          setPreviewLeadMs(kind === "rough" ? (report.lead_ms ?? 0) : 0);
+          setPreview({ url, stamp, label: kind === "rough" ? "Standard preview" : "Selected section" });
         }
         // the made version carries the exact positions — use them from now on
         setSpecTick((n) => n + 1);
@@ -626,7 +684,25 @@ function StudioWorkspace() {
         setProgress("");
       }
     },
-    [busy, dirty, id, rangeAround, save]
+    [busy, dirty, exportSize, id, rangeAround, save]
+  );
+
+  /** Fill this episode's blanks from a saved brand; anything already chosen stays. */
+  const takeBrand = useCallback(
+    (template: BrandTemplate) => {
+      const current = editsRef.current;
+      if (!current) return;
+      const result = applyBrand(current, template);
+      const note = describeApply(result, template.name);
+      setBrandNote(note);
+      if (!result.filled.length) {
+        toast(note, "info");
+        return;
+      }
+      setHistory((h) => (h ? pushHistory(h, result.edits) : h));
+      toast(`${note} — undo with U`, "ok");
+    },
+    []
   );
 
   const upload = useCallback(
@@ -714,8 +790,8 @@ function StudioWorkspace() {
       <div className="rr-card rr-enter mx-auto mt-10 max-w-md px-6 py-12 text-center">
         <p className="rr-h3">We can&apos;t find that episode</p>
         <p className="mt-1 text-sm text-ink-faint">It may have been removed from your library.</p>
-        <Link href="/history" className="rr-btn rr-btn-primary mt-5">
-          Open History
+        <Link href="/projects" className="rr-btn rr-btn-primary mt-5">
+          My projects
         </Link>
       </div>
     );
@@ -757,7 +833,7 @@ function StudioWorkspace() {
     return (
       <div className="rr-card rr-enter mx-auto mt-10 max-w-lg px-6 py-12 text-center">
         <p className="rr-h3">This episode is still being listened to</p>
-        <p className="mt-1 text-sm text-ink-faint">The full-episode editor opens as soon as the transcript is ready.</p>
+        <p className="mt-1 text-sm text-ink-faint">The episode editor opens as soon as the transcript is ready.</p>
         <Link href={`/episode?id=${encodeURIComponent(id)}`} className="rr-btn rr-btn-primary mt-5">
           Watch the progress
         </Link>
@@ -771,44 +847,74 @@ function StudioWorkspace() {
     const step = initStep(latest);
     const finished = !!prepareJob?.done && !prepareJob.error;
     return (
-      <div className="rr-card rr-enter mx-auto mt-10 max-w-lg px-6 py-10 text-center">
-        <Wand2 className="mx-auto h-6 w-6 text-accent" />
-        <p className="rr-h3 mt-3">Prepare the episode for editing</p>
-        <p className="mx-auto mt-1 max-w-sm text-sm text-ink-faint">
-          We line every word up with the recording and look for filler, long pauses and repeats. A long episode takes a few minutes, and it only happens once.
-        </p>
-        <div className="mx-auto mt-6 w-fit space-y-2 text-left">
-          {INIT_STEPS.map((s, i) => (
-            <div key={s.label} className="flex items-center gap-2.5 text-sm">
-              {preparing && i === step ? (
-                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-accent" />
-              ) : (preparing && i < step) || finished ? (
-                <Check className="h-4 w-4 shrink-0 text-ready" />
-              ) : (
-                <span className="h-4 w-4 shrink-0 rounded-full border border-line-strong" />
-              )}
-              <span className={preparing && i === step ? "text-ink" : "text-ink-dim"}>{s.label}</span>
-            </div>
-          ))}
+      <div className="rr-card rr-enter mx-auto mt-10 max-w-xl px-6 py-10">
+        <div className="text-center">
+          <Wand2 className="mx-auto h-6 w-6 text-accent" />
+          <h1 className="rr-h3 mt-3">Turn your raw recording into a finished episode</h1>
+          <p className="mx-auto mt-1.5 max-w-md text-sm text-ink-faint">
+            Remove mistakes, improve pacing, clean the audio, add your branding and export a publish-ready full podcast episode.
+          </p>
         </div>
+
+        {preparing ? (
+          <div className="mx-auto mt-6 w-fit space-y-2 text-left">
+            {INIT_STEPS.map((s, i) => (
+              <div key={s.label} className="flex items-center gap-2.5 text-sm">
+                {i === step ? (
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-accent" />
+                ) : i < step ? (
+                  <Check className="h-4 w-4 shrink-0 text-ready" />
+                ) : (
+                  <span className="h-4 w-4 shrink-0 rounded-full border border-line-strong" />
+                )}
+                <span className={i === step ? "text-ink" : "text-ink-dim"}>{s.label}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <ol className="mx-auto mt-6 max-w-md space-y-2.5">
+            {WORKFLOW_STEPS.map((s, i) => (
+              <li key={s.title} className="flex items-start gap-2.5 text-sm">
+                <span
+                  className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-medium ${
+                    finished && i === 0 ? "bg-ready/15 text-ready" : "bg-surface-overlay text-ink-dim"
+                  }`}
+                >
+                  {finished && i === 0 ? <Check className="h-3 w-3" /> : i + 1}
+                </span>
+                <span className="min-w-0">
+                  <span className="text-ink">{s.title}</span>
+                  <span className="block text-[11px] leading-tight text-ink-faint">{s.detail}</span>
+                </span>
+              </li>
+            ))}
+          </ol>
+        )}
+
         {preparing ? (
           <div className="mt-5 space-y-1.5">
             <div className="rr-progress" data-indeterminate="true">
               <i />
             </div>
-            <p className="text-[11px] text-ink-dim">{studioProgress(latest)}</p>
+            <p className="text-center text-[11px] text-ink-dim">{studioProgress(latest)}</p>
           </div>
         ) : (
-          <button
-            type="button"
-            className="rr-btn rr-btn-accent mt-6"
-            disabled={connection !== "connected"}
-            onClick={() => startStudioRun(id, "studio-prepare", (onProgress) => runStudioInit(id, onProgress))}
-          >
-            <Sparkles className="h-4 w-4" /> {prepareJob?.error ? "Try again" : "Prepare the episode"}
-          </button>
+          <div className="mt-6 text-center">
+            <button
+              type="button"
+              className="rr-btn rr-btn-accent"
+              disabled={connection !== "connected"}
+              onClick={() => startStudioRun(id, "studio-prepare", (onProgress) => runStudioInit(id, onProgress))}
+            >
+              <Sparkles className="h-4 w-4" /> {prepareJob?.error ? "Try again" : "Prepare full episode"}
+            </button>
+            <p className="mx-auto mt-2 max-w-sm text-[11px] text-ink-faint">
+              The first step lines every word up with the recording and looks for filler, long pauses and repeats. A long episode takes a few
+              minutes, and it only happens once.
+            </p>
+          </div>
         )}
-        {prepareJob?.error ? <p className="mt-3 text-sm text-danger">It stopped: {prepareJob.error}</p> : null}
+        {prepareJob?.error ? <p className="mt-3 text-center text-sm text-danger">It stopped: {prepareJob.error}</p> : null}
       </div>
     );
   }
@@ -846,12 +952,13 @@ function StudioWorkspace() {
       )}
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
-          <p className="rr-eyebrow">Podcast Studio</p>
+          <p className="rr-eyebrow">Episode Editor</p>
           <h1 className="rr-h2 mt-1 truncate">{prettyTitle(edits.title || project.title || id)}</h1>
           <p className="mt-1 text-sm text-ink-dim">
             {fmtDuration(sourceMs)} recorded · <span className="font-medium text-ink">{fmtDuration(finalMs)}</span> after your edit
             {sourceMs > finalMs + 500 ? ` · ${fmtDuration(sourceMs - finalMs)} taken out` : ""}
           </p>
+          <p className="mt-0.5 text-[12px] text-ink-faint">Cut what you don&apos;t want, tidy the sound, add your look — then export the finished episode.</p>
         </div>
         <div className="flex items-center gap-1.5">
           <span className={`rr-mono ${saveError ? "text-danger" : "text-ink-faint"}`}>{savedLabel}</span>
@@ -862,7 +969,7 @@ function StudioWorkspace() {
             <Redo2 className="h-3.5 w-3.5" /> Redo
           </button>
           <Link href={`/episode?id=${encodeURIComponent(id)}`} className="rr-btn rr-btn-ghost rr-btn-sm">
-            Short clips
+            Create clips
           </Link>
         </div>
       </header>
@@ -971,8 +1078,8 @@ function StudioWorkspace() {
             busy={busy}
             progress={progress}
             reports={reports}
+            quality={quality.export ?? quality.range ?? quality.rough ?? null}
             links={links}
-            uploading={uploading}
             onPatch={(patch) => commit((prev) => ({ ...prev, ...patch }))}
             onPatchAudio={(patch) => commit((prev) => ({ ...prev, audio: { ...prev.audio, ...patch } }))}
             onPatchVisual={(patch) => commit((prev) => ({ ...prev, visual: { ...prev.visual, ...patch } }))}
@@ -990,59 +1097,51 @@ function StudioWorkspace() {
               })
             }
             onRun={(kind) => void run(kind)}
-          />
+            onSeek={seek}
+            onRenameSpeaker={(speakerId, name) => commit((prev) => renameSpeaker(prev, speakerId, name))}
+            onRemoveSection={(sectionId) => commit((prev) => removeSection(prev, sectionId))}
+            uploading={uploading}
+            brands={brands}
+            brandsLoading={brandsLoading}
+            brandNote={brandNote}
+            onApplyBrand={takeBrand}
+            exportSize={exportSize}
+            onExportSize={setExportSize}
+            exportSizeReady={EXPORT_SIZE_READY}
+            cleanup={
+              <>
+                <SuggestionsPanel
+                  suggestions={suggestions}
+                  edits={edits}
+                  language={language}
+                  unsupported={unsupported}
+                  summary={applyNote}
+                  onAccept={(s) => commit((prev) => applySuggestion(prev, s))}
+                  onReject={(s) => commit((prev) => rejectSuggestion(prev, s))}
+                  onPlay={seek}
+                  onAudition={audition}
+                  onMarkReviewed={(sid) => commit((prev) => markReviewed(prev, sid))}
+                  onToggleOperation={(opId) => commit((prev) => toggleOperation(prev, opId))}
+                  embedded
+                />
 
-          <ProposalPanel
-            proposal={proposal}
-            edits={edits}
-            busy={proposalBusy}
-            progress={proposalProgress}
-            mode={mode}
-            onDraft={(goal, pick) => void draftEdit(goal, pick)}
-            onApply={takeItem}
-            onReject={dropItem}
-            onApplySafe={takeSafeItems}
-            onDiscard={dropProposal}
-            onAudition={audition}
+                <ProposalPanel
+                  proposal={proposal}
+                  edits={edits}
+                  busy={proposalBusy}
+                  progress={proposalProgress}
+                  mode={mode}
+                  onDraft={(goal, pick) => void draftEdit(goal, pick)}
+                  onApply={takeItem}
+                  onReject={dropItem}
+                  onApplySafe={takeSafeItems}
+                  onDiscard={dropProposal}
+                  onAudition={audition}
+                  embedded
+                />
+              </>
+            }
           />
-
-          <SuggestionsPanel
-            suggestions={suggestions}
-            edits={edits}
-            language={language}
-            unsupported={unsupported}
-            summary={applyNote}
-            onAccept={(s) => commit((prev) => applySuggestion(prev, s))}
-            onReject={(s) => commit((prev) => rejectSuggestion(prev, s))}
-            onPlay={seek}
-            onAudition={audition}
-            onMarkReviewed={(sid) => commit((prev) => markReviewed(prev, sid))}
-            onToggleOperation={(opId) => commit((prev) => toggleOperation(prev, opId))}
-          />
-
-          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-[11px] text-ink-faint">
-            <span>
-              <span className="rr-kbd">Delete</span> remove
-            </span>
-            <span>
-              <span className="rr-kbd">M</span> silence
-            </span>
-            <span>
-              <span className="rr-kbd">B</span> bleep
-            </span>
-            <span>
-              <span className="rr-kbd">U</span> undo
-            </span>
-            <span>
-              <span className="rr-kbd">⇧U</span> redo
-            </span>
-            <span>
-              <span className="rr-kbd">Space</span> play
-            </span>
-            <span>
-              <span className="rr-kbd">/</span> find
-            </span>
-          </p>
         </aside>
       </div>
 

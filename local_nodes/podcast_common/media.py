@@ -18,6 +18,11 @@ from pathlib import Path
 
 LAYOUTS = ('vertical', 'wide')
 
+# The shapes a clip can be rendered in. 'vertical' and 'wide' are the two
+# render passes; an aspect narrows what the vertical pass actually produces
+# (9:16 as always, or 4:5 / 1:1 for the feed formats).
+CLIP_ASPECTS = ('9:16', '4:5', '1:1', '16:9')
+
 LOUDNESS_TARGET_LUFS = -16.0
 TRUE_PEAK_DBTP = -1.0
 LOUDNESS_RANGE_LU = 11.0
@@ -75,13 +80,22 @@ def probe(path: str | Path) -> dict:
 
 
 def dims(layout: str, size: int) -> tuple[int, int]:
-    """Output geometry from the long edge: vertical 9:16 (1080x1920 at 1920), wide 16:9 (1920x1080)."""
+    """
+    Output geometry for a clip from the vertical long edge: vertical 9:16
+    (1080x1920 at 1920) and wide 16:9 (1920x1080) as always, plus the two feed
+    shapes, which keep the portrait WIDTH so a preview scales proportionally:
+    4:5 -> 1080x1350 and 1:1 -> 1080x1080 at 1920, 540x674 / 540x540 at 960.
+    """
     size = int(size) // 2 * 2
     short = int(round(size * 9 / 16)) // 2 * 2
-    if layout == 'vertical':
+    if layout in ('vertical', '9:16'):
         return short, size
-    if layout == 'wide':
+    if layout in ('wide', '16:9'):
         return size, short
+    if layout == '4:5':
+        return short, int(round(short * 5 / 4)) // 2 * 2
+    if layout == '1:1':
+        return short, short
     raise ValueError(f'unknown layout {layout!r}')
 
 
@@ -337,8 +351,9 @@ def _escape_filter_path(path: str | Path) -> str:
 
 
 def build_video_filter(segments_ms: list[tuple[int, int]], layout: str, width: int, height: int,
-                       fps: int, ass_path: str | Path | None) -> str:
-    """Cut the (already clip-seeked) video into the keep segments, concat, reframe, caption."""
+                       fps: int, ass_path: str | Path | None, logo: dict | None = None,
+                       logo_input: int = 2) -> str:
+    """Cut the (already clip-seeked) video into the keep segments, concat, reframe, brand, caption."""
     frame_ms = 1000 / fps
     usable = [(s, e) for s, e in segments_ms if e - s >= frame_ms]
     if not usable:
@@ -354,7 +369,7 @@ def build_video_filter(segments_ms: list[tuple[int, int]], layout: str, width: i
     else:
         current = '[v0]'
 
-    if layout == 'vertical':
+    if layout in ('vertical', '9:16', '4:5', '1:1'):
         # blur-pad reframe: the full frame sits on a blurred, darkened copy of itself
         parts.append(f'{current}split[fgsrc][bgsrc]')
         parts.append(
@@ -370,6 +385,9 @@ def build_video_filter(segments_ms: list[tuple[int, int]], layout: str, width: i
         )
 
     tail = '[framed]'
+    if logo:
+        parts.extend(logo_chain(logo, width, height, logo_input, tail, '[logoed]'))
+        tail = '[logoed]'
     if ass_path:
         parts.append(f"{tail}subtitles='{_escape_filter_path(ass_path)}'[captioned]")
         tail = '[captioned]'
@@ -390,15 +408,20 @@ def render_clip_video(
     fps: int = 30,
     crf: int = 20,
     preset: str = 'veryfast',
+    logo: dict | None = None,
+    logo_path: str | Path | None = None,
 ) -> Path:
     width, height = dims(layout, size)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    graph = build_video_filter(segments_ms, layout, width, height, fps, ass_path)
+    use_logo = logo if (logo and logo_path) else None
+    graph = build_video_filter(segments_ms, layout, width, height, fps, ass_path, logo=use_logo, logo_input=2)
+    seconds = (clip_end_ms - clip_start_ms) / 1000
+    brand = ['-loop', '1', '-framerate', str(fps), '-t', f'{seconds:.3f}', '-i', str(logo_path)] if use_logo else []
     run_ffmpeg(
         [
             '-y', '-ss', f'{clip_start_ms / 1000:.3f}', '-t', f'{(clip_end_ms - clip_start_ms) / 1000:.3f}',
-            '-i', str(video_path), '-i', str(audio_path),
+            '-i', str(video_path), '-i', str(audio_path), *brand,
             '-filter_complex', graph, '-map', '[vout]', '-map', '1:a',
             '-c:v', 'libx264', '-preset', preset, '-crf', str(crf), '-r', str(fps),
             '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-shortest', str(out_path),
@@ -501,7 +524,8 @@ def _escape_cmd_path(path: str | Path) -> str:
 
 
 def build_layout_graph(pieces: list[dict], layout: dict, width: int, height: int, fps: int,
-                       ass_path: str | Path | None, work: Path) -> str:
+                       ass_path: str | Path | None, work: Path, logo: dict | None = None,
+                       logo_input: int = 2) -> str:
     """
     The video filter graph for a layout plan: each piece (a keep segment
     intersected with a layout segment, in clip time) is trimmed from the
@@ -569,6 +593,9 @@ def build_layout_graph(pieces: list[dict], layout: dict, width: int, height: int
         tail = '[joined]'
     else:
         tail = outs[0]
+    if logo:
+        parts.extend(logo_chain(logo, out_w, out_h, logo_input, tail, '[logoed]'))
+        tail = '[logoed]'
     if ass_path:
         parts.append(f"{tail}subtitles='{_escape_filter_path(ass_path)}'[captioned]")
         tail = '[captioned]'
@@ -601,17 +628,22 @@ def render_layout_video(
     fps: int = 30,
     crf: int = 20,
     preset: str = 'veryfast',
+    logo: dict | None = None,
+    logo_path: str | Path | None = None,
 ) -> Path:
     """Render a clip through its layout plan (the audio is already cut and mastered)."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     width, height = int(layout['source']['width']), int(layout['source']['height'])
     pieces = layout_pieces(keep, layout['segments'])
-    graph = build_layout_graph(pieces, layout, width, height, fps, ass_path, work)
+    use_logo = logo if (logo and logo_path) else None
+    graph = build_layout_graph(pieces, layout, width, height, fps, ass_path, work, logo=use_logo, logo_input=2)
+    seconds = (clip_end_ms - clip_start_ms) / 1000
+    brand = ['-loop', '1', '-framerate', str(fps), '-t', f'{seconds:.3f}', '-i', str(logo_path)] if use_logo else []
     run_ffmpeg(
         [
             '-y', '-ss', f'{clip_start_ms / 1000:.3f}', '-t', f'{(clip_end_ms - clip_start_ms) / 1000:.3f}',
-            '-i', str(video_path), '-i', str(audio_path),
+            '-i', str(video_path), '-i', str(audio_path), *brand,
             '-filter_complex', graph, '-map', '[vout]', '-map', '1:a',
             '-c:v', 'libx264', '-preset', preset, '-crf', str(crf), '-r', str(fps),
             '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-shortest', str(out_path),
@@ -701,6 +733,65 @@ def capped_dims(aspect: str | None, max_edge: int) -> tuple[int, int]:
     else:
         height, width = long_edge, int(round(long_edge * w / h))
     return max(2, width // 2 * 2), max(2, height // 2 * 2)
+
+
+def preview_dims(aspect: str | None, max_w: int, max_h: int,
+                 source_w: int = 0, source_h: int = 0) -> tuple[int, int]:
+    """
+    The largest frame of `aspect` that fits inside max_w x max_h and is never
+    bigger than the source itself — the preview tiers' geometry. A 640x360
+    recording previews at 640x360, not blown up to 1280x720.
+    """
+    w, h = parse_aspect(aspect)
+    scale = min(float(max_w) / w, float(max_h) / h)
+    source_long = max(int(source_w or 0), int(source_h or 0))
+    if source_long > 0:
+        scale = min(scale, float(source_long) / max(w, h))
+    width = max(2, int(round(w * scale)) // 2 * 2)
+    height = max(2, int(round(h * scale)) // 2 * 2)
+    return width, height
+
+
+def export_short_edge(size, source_w: int = 0, source_h: int = 0, default: int = 1080) -> int:
+    """`size: 720 | 1080 | source` from the export question -> the output's short edge."""
+    text = str(size or '').strip().lower()
+    if text in ('source', 'original', 'max'):
+        short = min(int(source_w or 0), int(source_h or 0))
+        return max(2, short // 2 * 2) if short else default
+    try:
+        value = int(float(text))
+    except (TypeError, ValueError):
+        return default
+    return max(2, value // 2 * 2) if value > 0 else default
+
+
+def quality_block(tier: str, check: dict | None, *, crf: int, preset: str, channels: int,
+                  source_width=None, source_height=None, fps=None, width=None, height=None) -> dict:
+    """
+    The report's `quality` record: what the file REALLY is (probed), next to
+    the settings it was encoded with and the source it came from. `upscaled`
+    is a measurement, not a promise — it is True only if the output really is
+    larger than the recording.
+    """
+    check = check if isinstance(check, dict) else {}
+    out_w = int(check.get('width') or width or 0)
+    out_h = int(check.get('height') or height or 0)
+    src_w = int(source_width or 0)
+    src_h = int(source_height or 0)
+    measured_fps = check.get('fps') or fps
+    return {
+        'tier': str(tier),
+        'width': out_w,
+        'height': out_h,
+        'fps': round(float(measured_fps), 3) if measured_fps else None,
+        'video_codec': check.get('video_codec') or ('h264' if out_w else None),
+        'crf': int(crf),
+        'preset': str(preset),
+        'audio_channels': int(check.get('audio_channels') or channels or 0),
+        'source_width': src_w or None,
+        'source_height': src_h or None,
+        'upscaled': bool(src_w and src_h and out_w and out_h and max(out_w, out_h) > max(src_w, src_h)),
+    }
 
 
 def caption_layout_for(width: int, height: int) -> str:

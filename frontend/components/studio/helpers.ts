@@ -7,9 +7,9 @@
  */
 
 import { useCallback, useSyncExternalStore } from "react";
-import { getRun, subscribeRun, type RunState } from "@/lib/engine";
-import type { Sentence, StatusEvent } from "@/lib/podcast";
-import { fmtDuration, type ApplyAllResult, type EpisodeEdits, type Operation, type StudioWord, type Suggestion } from "@/lib/studio";
+import { getRun, readJsonOr, subscribeRun, type RunState } from "@/lib/engine";
+import { projectRoot, type Sentence, type StatusEvent } from "@/lib/podcast";
+import { fmtDuration, type ApplyAllResult, type EpisodeEdits, type Operation, type StudioReport, type StudioWord, type Suggestion } from "@/lib/studio";
 
 export interface EditorWord {
   /** position in the flat word list — the unit of selection */
@@ -237,6 +237,19 @@ export function studioProgress(evt: StatusEvent | null | undefined): string {
   }
 }
 
+/**
+ * The five steps of making a full episode, in the order a producer works
+ * through them. Shown before anything has been prepared, so the screen says
+ * what it is for before it asks for a few minutes of waiting.
+ */
+export const WORKFLOW_STEPS: { title: string; detail: string }[] = [
+  { title: "Prepare transcript and waveform", detail: "Every word lined up with the recording, once per episode" },
+  { title: "Clean up the recording", detail: "Filler, long pauses, repeats and second takes — you decide what goes" },
+  { title: "Review the complete episode", detail: "Watch it back, fix wording, mark chapters and speakers" },
+  { title: "Add finishing and branding", detail: "Sound, captions, logo, opening and closing, music" },
+  { title: "Export the full episode", detail: "Video, audio, captions and chapters, ready to publish" },
+];
+
 export const INIT_STEPS: { stages: string[]; label: string }[] = [
   { stages: ["probing", "studio_aligning"], label: "Lining up the words" },
   { stages: ["studio_suggesting"], label: "Finding things to tidy" },
@@ -271,3 +284,82 @@ export const CATEGORY_LABELS: Record<string, string> = {
   tangent: "Off the point",
   other: "Other",
 };
+
+/* ---- how a made version actually came out --------------------------------- */
+
+/** The measured shape of a rendered file, as the report gives it back. */
+export interface RenderQuality {
+  width?: number;
+  height?: number;
+  fps?: number;
+  /** 1 = mono, 2 = stereo */
+  channels?: number;
+  /** which pass made it: standard preview, selected section, export */
+  tier?: string;
+  /** true when the file was kept from an earlier, identical render */
+  cached?: boolean;
+  /** false on a quick preview: the sound is only finished on export */
+  mastered?: boolean;
+}
+
+export type RenderKind = "rough" | "range" | "export";
+
+const asRec = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+const number = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+
+/** Pull the measured numbers out of a render report, old shape or new. */
+export function qualityOf(raw: unknown): RenderQuality | null {
+  const m = asRec(raw);
+  const q = asRec(m.quality);
+  const found: RenderQuality = {
+    width: number(q.width) ?? number(m.width),
+    height: number(q.height) ?? number(m.height),
+    fps: number(q.fps) ?? number(m.fps),
+    channels: number(q.audio_channels) ?? number(m.audio_channels),
+    tier: typeof q.tier === "string" ? q.tier : typeof m.quality === "string" ? m.quality : undefined,
+    cached: typeof m.cached === "boolean" ? m.cached : undefined,
+    mastered: typeof m.mastered === "boolean" ? m.mastered : undefined,
+  };
+  return found.width || found.height || found.fps || found.channels ? found : null;
+}
+
+/** What we can say about a render from the answer alone (no extra reading). */
+export function qualityOfReport(report: StudioReport | undefined | null): RenderQuality | null {
+  if (!report) return null;
+  return report.width || report.height ? { width: report.width, height: report.height } : null;
+}
+
+/**
+ * The full picture of how a version came out: the render writes a report file
+ * next to the file itself, and that is where the measured frame size, frame
+ * rate and channel count live. A file we cannot find simply means we say less.
+ */
+export async function loadRenderQuality(episodeId: string, kind: RenderKind, version: number | null): Promise<RenderQuality | null> {
+  if (!version) return null;
+  const root = projectRoot(episodeId);
+  const candidates =
+    kind === "export"
+      ? [`${root}/exports/studio/v${version}/report.json`]
+      : kind === "range"
+        ? [`${root}/previews/studio/range-v${version}.json`]
+        : [`${root}/previews/studio/standard-v${version}.json`, `${root}/previews/studio/rough-v${version}.json`];
+  for (const path of candidates) {
+    const found = qualityOf(await readJsonOr<unknown>(path, null));
+    if (found) return found;
+  }
+  return null;
+}
+
+const CHANNELS: Record<number, string> = { 1: "mono", 2: "stereo" };
+
+/** "1280×720 · 30 fps · stereo" — only the parts we actually measured. */
+export function qualityLine(quality: RenderQuality | null | undefined): string {
+  if (!quality) return "";
+  const bits: string[] = [];
+  if (quality.width && quality.height) bits.push(`${Math.round(quality.width)}×${Math.round(quality.height)}`);
+  if (quality.fps) bits.push(`${Math.round(quality.fps)} fps`);
+  if (quality.channels) bits.push(CHANNELS[Math.round(quality.channels)] ?? `${Math.round(quality.channels)} channels`);
+  if (quality.cached) bits.push("kept from an identical render");
+  return bits.join(" · ");
+}

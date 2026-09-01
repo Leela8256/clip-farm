@@ -29,7 +29,7 @@ from rocketlib import IInstanceBase, Entry, warning, debug
 from local_nodes.podcast_common.store import get_store, write_file, write_json
 from local_nodes.podcast_common.project import Project, read_json_or, update_status
 from local_nodes.podcast_common.cache import local_source
-from local_nodes.podcast_common.media import DETECT_WIDTH, crop_thumbnail
+from local_nodes.podcast_common.media import CLIP_ASPECTS, DETECT_WIDTH, crop_thumbnail, dims
 from local_nodes.podcast_common.visual import SAMPLE_MS, build_layout, faces_from_persons
 
 from .IGlobal import IGlobal
@@ -107,6 +107,7 @@ class IInstance(IInstanceBase):
         mode = str(options.get('layout_mode') or cfg['mode'] or 'auto')
         subject = options.get('subject') or None
         focus = options.get('focus') if isinstance(options.get('focus'), dict) else None
+        canvas_w, canvas_h = self._canvas(options)
         update_status(store, project, NODE, 'tracking', pipe, clip=clip_id, frames=len(self._faces), people=None)
 
         if not media.get('has_video', True) or not width or not height:
@@ -127,7 +128,7 @@ class IInstance(IInstanceBase):
         frames = [{'t_ms': t, 'faces': _scale_faces(faces_from_persons(faces), scale)} for t, faces in zip(times, self._faces)]
 
         layout = build_layout(frames, plan.get('words') or [], total_ms, width=width, height=height,
-                              out_w=int(cfg['canvas_width']), out_h=int(cfg['canvas_height']),
+                              out_w=canvas_w, out_h=canvas_h,
                               mode=mode, subject=subject, focus=focus, sample_ms=sample_ms)
         layout['clip_id'] = clip_id
         layout['thumbnails'] = self._thumbnails(store, project, plan, layout)
@@ -160,12 +161,26 @@ class IInstance(IInstanceBase):
             shutil.rmtree(work, ignore_errors=True)
         return out
 
+    def _canvas(self, options: dict) -> tuple[int, int]:
+        """
+        The shape the crops are planned for. The configured canvas is the
+        default (1080x1920); a clip asking for a feed format (4:5, 1:1) or a
+        wide render plans its windows at that aspect instead, so a panel is
+        never stretched to fit the frame it is scaled into.
+        """
+        cfg = self.IGlobal.config
+        canvas_w, canvas_h = int(cfg['canvas_width']), int(cfg['canvas_height'])
+        aspect = str((options or {}).get('aspect') or '').strip()
+        if aspect in CLIP_ASPECTS:
+            return dims(aspect, max(canvas_w, canvas_h))
+        return canvas_w, canvas_h
+
     def _passthrough(self, plan: dict, reason: str) -> dict:
         media = plan.get('media') or {}
-        cfg = self.IGlobal.config
+        canvas_w, canvas_h = self._canvas(plan.get('options') or {})
         return {'schema_version': 1, 'mode': 'auto', 'clip_id': plan['clip_id'],
                 'source': {'width': int(media.get('width') or 0), 'height': int(media.get('height') or 0)},
-                'canvas': {'width': int(cfg['canvas_width']), 'height': int(cfg['canvas_height'])},
+                'canvas': {'width': canvas_w, 'height': canvas_h},
                 'tracks': [], 'speaking': [], 'paths': [], 'thumbnails': {},
                 'segments': [{'start_ms': 0, 'end_ms': int(plan['duration_ms']), 'layout': 'full_frame', 'subjects': [], 'reason': reason}],
                 'metrics': {'people': 0, 'frames_sampled': len(self._faces), 'faces_detected_pct': 0, 'layout_changes': 0},

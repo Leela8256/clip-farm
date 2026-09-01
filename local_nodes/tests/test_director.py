@@ -66,7 +66,7 @@ class SpecTests(unittest.TestCase):
         self.assertEqual(spec['filler_policy'], 'smart')
         self.assertEqual(spec['exclude_subjects'], ['politics'])
         joined = ' '.join(spec['warnings'])
-        for needle in ('clamped', 'swapped', 'Strict', 'phase 3', 'filler policy', 'excluded subject'):
+        for needle in ('clamped', 'swapped', 'Strict', 'filler policy', 'excluded subject'):
             self.assertIn(needle, joined)
 
     def test_units_and_defaults(self):
