@@ -55,7 +55,7 @@
     },
     {
       "id": "render",
-      "provider": "podcast_render",
+      "provider": "media_render",
       "config": {
         "profile": "export",
         "export": {

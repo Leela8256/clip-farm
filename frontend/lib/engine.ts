@@ -8,13 +8,18 @@
  * read back from the store.
  *
  * Pipelines (mirrors of .rocketride/*.pipe):
- *   episode-analysis   upload → transcript → scored candidates + chapters
+ *   episode-analysis   upload → transcript → the model's scored moments
  *   transcript-index   transcript passages → embedding_transformer → qdrant
  *   transcript-search  question → embedding → qdrant → passages (stock only)
  *   director-chat      question → llm_anthropic (prompt parsing, revisions)
- *   prompt-director    question → embedding → qdrant → llm → podcast_refine
+ *   prompt-director    question → embedding → qdrant → llm_anthropic
  *   prompt-director-full  the same without the index (transcript in context)
  *   clip-preview / clip-export
+ *
+ * The discovery pipelines stop at the model's raw answers: choosing which
+ * moments survive the request's hard constraints, ranking them and writing
+ * analysis/candidates.json · chapters.json · requests/<rNN>.json is the
+ * browser's own work (lib/refine.ts), so the pipelines stay stock to the LLM.
  *
  * Secrets never reach the browser: the pipeline JSON keeps its
  * `${ROCKETRIDE_ANTHROPIC_KEY}` placeholder and the engine substitutes it from
@@ -39,6 +44,7 @@ import indexPipe from "./pipelines/transcript-index.json";
 import searchPipe from "./pipelines/transcript-search.json";
 import visualPipe from "./pipelines/visual-scan.json";
 import {
+  answerPayloads,
   firstJsonAnswer,
   pickManifest,
   projectRoot,
@@ -56,6 +62,7 @@ import {
   buildDirectQuestion,
   buildParseQuestion,
   buildReviseQuestion,
+  describeSpec,
   durationWindow,
   nextRequestId,
   normalizeSpec,
@@ -68,6 +75,7 @@ import {
   type RequestSpec,
   type Revision,
 } from "./director";
+import { REFINE_DEFAULTS, REFINE_NODE, refineAnalysis, refineDirected, type RefineSentence } from "./refine";
 
 export const ENGINE_URI = process.env.NEXT_PUBLIC_ROCKETRIDE_URI ?? "http://127.0.0.1:5567";
 export const ENGINE_APIKEY = process.env.NEXT_PUBLIC_ROCKETRIDE_APIKEY ?? "MYAPIKEY";
@@ -475,7 +483,7 @@ async function runQuestion(kind: PipeKind, context: string[], text: string, onPr
   const question = new Question();
   question.addContext(context.join("\n"));
   question.addQuestion(text || "go");
-  return runPrepared(kind, question, onProgress);
+  return refineIo.run(kind, question, onProgress);
 }
 
 /** A fresh SDK Question whose filter object exists (the builders write into it). */
@@ -485,20 +493,142 @@ function newQuestion(): Question {
   return q;
 }
 
-/** Episode analysis: transcript → scored candidates + chapters, persisted under the project. */
+// ------------------------------------------------------- client-side refine
+
+/**
+ * What finishing a discovery run needs. The pipeline hands back the model's
+ * raw answers; the selection (lib/refine.ts) and every file it produces happen
+ * here, so the store calls and the run itself are one swappable seam.
+ */
+export interface RefineIo {
+  read: <T>(path: string) => Promise<StrictRead<T>>;
+  write: (path: string, value: unknown) => Promise<void>;
+  run: (kind: PipeKind, question: Question, onProgress?: ProgressHandler) => Promise<unknown>;
+}
+
+const REAL_REFINE_IO: RefineIo = {
+  read: readJsonStrict,
+  // one write per file in the air at a time, newest value wins
+  write: (path, value) => saveJsonQueued(path, path, value),
+  run: runPrepared,
+};
+
+let refineIo: RefineIo = { ...REAL_REFINE_IO };
+
+/** Test seam: swap the store and the pipeline runs behind the discovery jobs (null puts the real ones back). */
+export function setRefineIo(patch: Partial<RefineIo> | null): void {
+  refineIo = patch ? { ...REAL_REFINE_IO, ...patch } : { ...REAL_REFINE_IO };
+}
+
+const nowSeconds = () => Date.now() / 1000;
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+
+/** A whole number from a setting, falling back when it is missing, unreadable or zero. */
+function intOr(value: unknown, fallback: number): number {
+  const n = typeof value === "string" ? Number(value) : value;
+  return typeof n === "number" && Number.isFinite(n) && n ? Math.trunc(n) : fallback;
+}
+
+/**
+ * A file the refine step cannot work without. Fail-closed: a read that did not
+ * happen is never treated as an empty file, because the next step writes.
+ */
+async function readOrThrow<T>(path: string, what: string): Promise<T> {
+  const found = await refineIo.read<T>(path);
+  if (found.ok) return found.value;
+  throw new Error(found.missing ? `${what} is missing (${path}).` : `${what} could not be read: ${found.error || "unknown error"}`);
+}
+
+/** The same, for a file that may legitimately not exist yet. */
+async function readOrNull<T>(path: string, what: string): Promise<T | null> {
+  const found = await refineIo.read<T>(path);
+  if (found.ok) return found.value;
+  if (found.missing) return null;
+  throw new Error(`${what} could not be read: ${found.error || "unknown error"}`);
+}
+
+function toRefineSentences(value: unknown): RefineSentence[] {
+  return (Array.isArray(value) ? value : []).map((raw, i) => {
+    const s = asRecord(raw);
+    return { id: intOr(s.id, i), text: typeof s.text === "string" ? s.text : "", start_ms: intOr(s.start_ms, 0), end_ms: intOr(s.end_ms, 0) };
+  });
+}
+
+/** project.json as the nodes save it: the caller's changes, stamped. */
+function stamped(project: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+  return { ...project, ...patch, schema_version: 2, updated: nowSeconds() };
+}
+
+/**
+ * The progress line this step has always written: status.json for a page that
+ * reloads mid-run, and the same event on the run's own progress channel. A
+ * status line is never worth failing a finished run for.
+ */
+async function refineStatus(root: string, episodeId: string, stage: string, data: Record<string, unknown>, onProgress?: ProgressHandler): Promise<void> {
+  const event = { node: REFINE_NODE, stage, time: nowSeconds(), ...data, episode_id: episodeId } as StatusEvent;
+  onProgress?.(event);
+  try {
+    await refineIo.write(`${root}/status.json`, event);
+  } catch {
+    /* the run is done; a missing status line only costs a reload its catch-up */
+  }
+}
+
+/**
+ * Episode analysis: transcript → scored candidates + chapters, persisted under
+ * the project. The pipeline stops at the model's answers; the ranking, the
+ * length and overlap rules and the files are the browser's own work.
+ */
 export async function runAnalysis(episodeId: string, goal: string, onProgress?: ProgressHandler): Promise<AnalysisManifest> {
-  const result = await runQuestion("analysis", [`project: ${projectRoot(episodeId)}`], goal, onProgress);
-  const m = pickManifest(result) ?? {};
-  return {
-    project: String(m.project ?? projectRoot(episodeId)),
-    episode_id: String(m.episode_id ?? episodeId),
-    candidates: toCandidates(m),
-    chapters: toChapters(m),
-    proposed: typeof m.proposed === "number" ? m.proposed : undefined,
-    parts: typeof m.parts === "number" ? m.parts : undefined,
-    seconds: typeof m.seconds === "number" ? m.seconds : undefined,
-    error: typeof m.error === "string" ? m.error : undefined,
-  };
+  const root = projectRoot(episodeId);
+  const started = Date.now();
+  // media_io is generic: every path it touches is named explicitly by the caller
+  const preRead = await refineIo.read<Record<string, unknown>>(`${root}/project.json`);
+  const pre = preRead.ok ? preRead.value : null;
+  const result = await runQuestion(
+    "analysis",
+    [`project: ${root}`, `source: ${pre?.source ?? `${root}/source`}`, `status_to: ${root}/status.json`, `write_to: ${root}/analysis/media.json`],
+    goal,
+    onProgress
+  );
+  try {
+    const project = await readOrThrow<Record<string, unknown>>(`${root}/project.json`, "The recording's project file");
+    const transcript = asRecord(await readOrNull<Record<string, unknown>>(`${root}/analysis/transcript.json`, "The transcript"));
+    const settings = asRecord(project.settings);
+    const media = asRecord(project.media);
+    const refined = refineAnalysis({
+      root,
+      episodeId,
+      goal: settings.goal ? String(settings.goal) : "",
+      want: intOr(settings.clip_count, REFINE_DEFAULTS.candidates),
+      minMs: intOr(settings.min_seconds, REFINE_DEFAULTS.min_seconds) * 1000,
+      maxMs: intOr(settings.max_seconds, REFINE_DEFAULTS.max_seconds) * 1000,
+      sentences: toRefineSentences(transcript.sentences),
+      durationMs: intOr(media.duration_ms, intOr(transcript.duration_ms, 0)),
+      payloads: answerPayloads(result),
+      now: nowSeconds(),
+      seconds: Math.round((Date.now() - started) / 100) / 10,
+    });
+    for (const file of refined.files) await refineIo.write(file.path, file.value);
+    await refineIo.write(`${root}/project.json`, stamped(project, { analysis: refined.analysis }));
+    await refineStatus(root, episodeId, refined.status.stage, refined.status.data, onProgress);
+    const m = refined.manifest;
+    return {
+      project: root,
+      episode_id: episodeId,
+      candidates: toCandidates(m),
+      chapters: toChapters(m),
+      proposed: typeof m.proposed === "number" ? m.proposed : undefined,
+      parts: typeof m.parts === "number" ? m.parts : undefined,
+      seconds: typeof m.seconds === "number" ? m.seconds : undefined,
+    };
+  } catch (e) {
+    const error = errorText(e);
+    await refineStatus(root, episodeId, "error", { message: error }, onProgress);
+    return { project: root, episode_id: episodeId, candidates: [], chapters: [], error };
+  }
 }
 
 export interface ClipRequest {
@@ -528,7 +658,29 @@ export async function runClip(kind: "preview" | "export", episodeId: string, req
   if (req.caption_style) context.push(`caption_style: ${JSON.stringify(req.caption_style).replace(/\n/g, ' ')}`);
   if (req.version != null) context.push(`version: ${req.version}`);
   const result = await runQuestion(kind, context, `${kind} ${req.clipId}`, onProgress);
-  return toReport(pickManifest(result) ?? {});
+  const report = toReport(pickManifest(result) ?? {});
+  // the render node is generic now and no longer writes the project's clip
+  // registry — record the finished render here (best effort, never fatal)
+  if (!report.error && Object.keys(report.files ?? {}).length) {
+    try {
+      const root = projectRoot(episodeId);
+      const project = await readJson<Record<string, unknown>>(`${root}/project.json`);
+      const clips = ((project.clips as Record<string, Record<string, unknown>>) ??= {});
+      const entry = (clips[req.clipId] ??= {});
+      Object.assign(entry, {
+        title: report.title ?? entry.title,
+        start_ms: report.start_ms,
+        end_ms: report.end_ms,
+        request_id: (report as unknown as Record<string, unknown>).request_id ?? entry.request_id ?? null,
+        version: report.version ?? null,
+      });
+      entry[report.mode] = { files: report.files, duration_ms: report.duration_ms, rendered_at: report.rendered_at };
+      await saveJsonQueued(`project:${episodeId}`, `${root}/project.json`, project);
+    } catch {
+      /* registry is derivable; a failed stamp must not fail the render */
+    }
+  }
+  return report;
 }
 
 // ------------------------------------------------------------ Prompt Director
@@ -583,8 +735,10 @@ export interface DirectorResult {
 
 /**
  * Step 2 — find and validate the clips. With a transcript index the question
- * flows through embedding_transformer → qdrant (scoped to this episode) → llm
- * → podcast_refine; without one the transcript rides in the question context.
+ * flows through embedding_transformer → qdrant (scoped to this episode) → llm;
+ * without one the transcript rides in the question context. The model's
+ * proposals then face the request's hard constraints here (lib/refine.ts) and
+ * the request file is written with its compliance report.
  */
 export async function runDirector(
   episodeId: string,
@@ -594,31 +748,63 @@ export async function runDirector(
   onProgress?: ProgressHandler
 ): Promise<DirectorResult> {
   const root = projectRoot(episodeId);
+  const requestId = request.request_id;
+  const requestPath = `${root}/analysis/requests/${requestId}.json`;
+  const mode = useIndex ? "index" : "full";
+  const started = Date.now();
   const spec = normalizeSpec(request.spec);
   const q = buildDirectQuestion(newQuestion(), {
     prompt: request.prompt,
     spec,
     window: durationWindow(spec),
     projectRoot: root,
-    requestId: request.request_id,
+    requestId,
     episodeId,
     searchQuery: request.search_query,
     transcriptLines: useIndex ? null : transcriptLines(sentences),
   });
-  const result = await runPrepared(useIndex ? "director" : "director-full", q, onProgress);
-  const m = pickManifest(result) ?? {};
-  return {
-    request_id: String(m.request_id ?? request.request_id),
-    candidates: toCandidates(m),
-    rejected: Array.isArray(m.rejected) ? (m.rejected as RejectedCandidate[]) : [],
-    compliance: m.compliance && typeof m.compliance === "object" ? (m.compliance as RequestCompliance) : null,
-    notes: Array.isArray(m.notes) ? m.notes.map(String) : [],
-    summary: typeof m.summary === "string" ? m.summary : undefined,
-    proposed: typeof m.proposed === "number" ? m.proposed : undefined,
-    seconds: typeof m.seconds === "number" ? m.seconds : undefined,
-    mode: useIndex ? "index" : "full",
-    error: typeof m.error === "string" ? m.error : undefined,
-  };
+  const result = await refineIo.run(useIndex ? "director" : "director-full", q, onProgress);
+  try {
+    // the request on file is the one being answered — never the copy in memory
+    const stored = await readOrThrow<Record<string, unknown>>(requestPath, `Request ${requestId}`);
+    const project = await readOrThrow<Record<string, unknown>>(`${root}/project.json`, "The recording's project file");
+    const transcript = asRecord(await readOrNull<Record<string, unknown>>(`${root}/analysis/transcript.json`, "The transcript"));
+    const runSpec = normalizeSpec(stored.spec, { target_seconds: REFINE_DEFAULTS.target_seconds, count: REFINE_DEFAULTS.candidates });
+    const window = durationWindow(runSpec, REFINE_DEFAULTS.min_seconds);
+    const refined = refineDirected({
+      root,
+      episodeId,
+      requestId,
+      request: stored,
+      spec: runSpec,
+      window,
+      summary: describeSpec(runSpec),
+      sentences: toRefineSentences(transcript.sentences),
+      durationMs: intOr(asRecord(project.media).duration_ms, intOr(transcript.duration_ms, 0)),
+      payloads: answerPayloads(result),
+      now: nowSeconds(),
+      seconds: Math.round((Date.now() - started) / 100) / 10,
+    });
+    for (const file of refined.files) await refineIo.write(file.path, file.value);
+    await refineIo.write(`${root}/project.json`, stamped(project, { requests: { ...asRecord(project.requests), [requestId]: refined.projectRequest } }));
+    await refineStatus(root, episodeId, refined.status.stage, refined.status.data, onProgress);
+    const m = refined.manifest;
+    return {
+      request_id: requestId,
+      candidates: toCandidates(m),
+      rejected: refined.rejected,
+      compliance: refined.compliance,
+      notes: refined.notes,
+      summary: typeof m.summary === "string" ? m.summary : undefined,
+      proposed: typeof m.proposed === "number" ? m.proposed : undefined,
+      seconds: typeof m.seconds === "number" ? m.seconds : undefined,
+      mode,
+    };
+  } catch (e) {
+    const error = errorText(e);
+    await refineStatus(root, episodeId, "error", { message: error, request: requestId }, onProgress);
+    return { request_id: requestId, candidates: [], rejected: [], compliance: null, notes: [], mode, error };
+  }
 }
 
 export interface SearchHit {
@@ -676,7 +862,9 @@ export async function runIndex(episodeId: string, onProgress?: ProgressHandler):
   const root = projectRoot(episodeId);
   let verdict: IndexResult;
   try {
-    await runQuestion("index", [`project: ${root}`], "index", onProgress);
+    const preRead = await refineIo.read<Record<string, unknown>>(`${root}/project.json`);
+  const pre = preRead.ok ? preRead.value : null;
+    await runQuestion("index", [`project: ${root}`, `source: ${pre?.source ?? ""}`, `status_to: ${root}/status.json`], "index", onProgress);
     const hits = await runSearch(episodeId, "the main topic of this episode", 1);
     const index = await readJsonOr<{ passages?: number } | null>(`${root}/analysis/index.json`, null);
     verdict = hits.length ? { ok: true, passages: index?.passages } : { ok: false, error: "the index answered with no passages" };
@@ -708,10 +896,32 @@ export interface VisualScanResult {
 export async function runVisualScan(episodeId: string, onProgress?: ProgressHandler): Promise<VisualScanResult> {
   const root = projectRoot(episodeId);
   try {
-    const result = await runQuestion("visual", [`project: ${root}`], "scan", onProgress);
+    const preRead = await refineIo.read<Record<string, unknown>>(`${root}/project.json`);
+  const pre = preRead.ok ? preRead.value : null;
+    const result = await runQuestion(
+      "visual",
+      [`project: ${root}`, `source: ${pre?.source ?? ""}`, `status_to: ${root}/status.json`,
+       `write_to: ${root}/analysis/visual`, `thumbnails_to: ${root}/analysis/visual`,
+       `echo.project: ${root}`, `echo.episode_id: ${episodeId}`],
+      "scan",
+      onProgress
+    );
     const m = pickManifest(result) ?? {};
     if (typeof m.error === "string") throw new Error(m.error);
-    return { ok: true, people: Array.isArray(m.people) ? m.people.length : undefined, scenes: typeof m.scenes === "number" ? m.scenes : undefined };
+    const people = Array.isArray(m.people) ? m.people.length : typeof m.people === "number" ? m.people : undefined;
+    const scenes = typeof m.scenes === "number" ? m.scenes : undefined;
+    // the scan node is generic now — the app records the result on the project
+    try {
+      const project = await readJsonOr<Record<string, unknown> | null>(`${root}/project.json`, null);
+      if (project) {
+        project.visual = { status: "scanned", people: people ?? 0, scenes: scenes ?? 0,
+          frames: typeof m.frames === "number" ? m.frames : undefined, scanned_at: Date.now() / 1000 };
+        await writeJson(`${root}/project.json`, project);
+      }
+    } catch {
+      /* best effort */
+    }
+    return { ok: true, people, scenes };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     const project = await readJsonOr<Record<string, unknown> | null>(`${root}/project.json`, null);

@@ -15,6 +15,17 @@ DEFAULTS = {
     # whole-episode editing studio
     'studio_piece_seconds': 60,
     'studio_model': '',
+    # what the render this plan feeds is asked to produce. media_render is generic:
+    # the deliverables (and their encode) are part of the spec this node emits, so
+    # the preview/export difference lives here now instead of in the renderer.
+    'render_mode': 'preview',
+    'size': 960,
+    'layouts': 'vertical',
+    'fps': 30,
+    'crf': 28,
+    'preset': 'ultrafast',
+    'captions': True,
+    'sidecars': False,
     # legacy booleans (schema 1 pipes); mapped onto the policies when the new keys are absent
     'tighten_pauses': True,
     'remove_fillers': True,

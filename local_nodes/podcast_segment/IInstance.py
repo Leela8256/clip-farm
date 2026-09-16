@@ -3,9 +3,11 @@ podcast_segment — the bridge between the stock transcriber and the stock
 LLM / embedding nodes.
 
 Collects audio_transcribe's sentence documents (documents lane) and the
-episode reference from podcast_ingest (text lane). Every batch of sentences
-is persisted to analysis/transcript.partial.json with absolute times, so a
-run that is cut short can be resumed piece by piece. On close it writes
+reference media_io forwards (text lane): the intervals of the recording that
+were streamed to the transcriber, in stream order, plus the caller's own
+context keys (`project:` among them). Every batch of sentences is persisted to
+analysis/transcript.partial.json with absolute times, so a run that is cut
+short can be resumed piece by piece. On close it writes
 analysis/transcript.json and then, per wired listener:
 
   questions   one rubric question per ~10-minute part (llm_anthropic answers
@@ -28,7 +30,8 @@ from rocketlib import IInstanceBase, Entry, warning, debug
 from ai.common.schema import Question, QuestionType
 
 from local_nodes.podcast_common.store import get_store, write_json
-from local_nodes.podcast_common.project import PARTIAL_TRANSCRIPT, Project, load_project, parse_ref, read_json_or, save_project, update_status
+from local_nodes.podcast_common.project import PARTIAL_TRANSCRIPT, Project, load_project, read_json_or, save_project, update_status
+from local_nodes.podcast_common.reference import media_reference, piece_offsets, pieces_block, ref_project
 from local_nodes.podcast_common.clips import chunk_sentences, fmt_timestamp, sentence_lines
 from local_nodes.podcast_common.passages import EMBED_MODEL_HINT, STEP_MS, WINDOW_MS, passage_documents, window_passages
 
@@ -162,12 +165,11 @@ class IInstance(IInstanceBase):
     # ------------------------------------------------------------------ inputs
 
     def writeText(self, text: str):
-        ref = parse_ref(text)
-        if not ref:
+        ref = media_reference(text)
+        if not ref or not ref_project(ref):
             return
         self._ref = ref
-        pieces = ref.get('pieces') or {}
-        if int(pieces.get('resumed') or 0) > 0:
+        if ref.get('skipped'):
             self._load_prior()
         for s in self._sentences:
             self._place(s)
@@ -194,11 +196,8 @@ class IInstance(IInstanceBase):
     # ---------------------------------------------------------------- helpers
 
     def _place(self, s: dict) -> None:
-        """Absolute time = exact offset of the streamed piece (from podcast_ingest) + in-piece time."""
-        pieces = (self._ref or {}).get('pieces') or {}
-        offsets = list(pieces.get('offsets_ms') or [])
-        indices = list(pieces.get('indices') or [])
-        piece_ms = int(float(pieces.get('seconds') or 0) * 1000)
+        """Absolute time = exact offset of the streamed piece (from media_io) + in-piece time."""
+        offsets, indices, piece_ms = piece_offsets(self._ref)
         k = int(s['stream'])
         s['piece'] = indices[k] if k < len(indices) else k
         offset = offsets[k] if k < len(offsets) else s['piece'] * piece_ms
@@ -208,11 +207,10 @@ class IInstance(IInstanceBase):
         store = get_store()
         if store is None or not self._ref:
             return
-        project = Project(self._ref['project'])
+        project = Project(ref_project(self._ref))
         partial = read_json_or(store, project.analysis(PARTIAL_TRANSCRIPT), None)
-        pieces = self._ref.get('pieces') or {}
         if (not isinstance(partial, dict) or partial.get('source') != self._ref.get('source')
-                or int(partial.get('piece_seconds') or 0) != int(pieces.get('seconds') or 0)):
+                or int(partial.get('piece_seconds') or 0) != int(self._ref.get('piece_seconds') or 0)):
             return
         self._prior_done = {int(i) for i in partial.get('pieces_done') or []}
         self._prior = [s for s in partial.get('sentences') or [] if int(s.get('piece', -1)) in self._prior_done]
@@ -224,8 +222,8 @@ class IInstance(IInstanceBase):
         if store is None or not self._ref:
             return
         try:
-            project = Project(self._ref['project'])
-            pieces = self._ref.get('pieces') or {}
+            project = Project(ref_project(self._ref))
+            pieces = pieces_block(self._ref)
             done = sorted(self._prior_done | {int(s['piece']) for s in self._sentences})
             sentences = sorted(self._prior + self._sentences, key=lambda s: s['start_ms'])
             write_json(store, project.analysis(PARTIAL_TRANSCRIPT),
@@ -240,10 +238,10 @@ class IInstance(IInstanceBase):
     def closing(self):
         store = get_store()
         pipe = getattr(self.instance, 'pipeId', None)
-        if not self._ref or store is None:
-            warning(f'{NODE}: no episode reference / store — nothing to segment')
+        if not self._ref or not ref_project(self._ref) or store is None:
+            warning(f'{NODE}: no media reference / store — nothing to segment')
             return
-        project = Project(self._ref['project'])
+        project = Project(ref_project(self._ref))
         try:
             self._process(store, project, pipe)
         except Exception as exc:  # noqa: BLE001
@@ -252,9 +250,13 @@ class IInstance(IInstanceBase):
 
     def _process(self, store, project: Project, pipe):
         cfg = self.IGlobal.config
-        settings = self._ref.get('settings') or {}
-        media = self._ref.get('media') or {}
-        pieces = self._ref.get('pieces') or {}
+        # the app record lives here, not in the reference: media_io is generic and
+        # knows nothing about a project, so the settings come from project.json and
+        # the recording's numbers are recorded there on the way through.
+        data = load_project(store, project)
+        settings = data.get('settings') or {}
+        media = self._ref.get('media') or data.get('media') or {}
+        pieces = pieces_block(self._ref)
         duration_ms = int(media.get('duration_ms') or 0)
 
         for s in self._sentences:
@@ -287,7 +289,9 @@ class IInstance(IInstanceBase):
         min_s = int(settings.get('min_seconds') or cfg['min_seconds'])
         max_s = int(settings.get('max_seconds') or cfg['max_seconds'])
         want = int(settings.get('clip_count') or 10)
-        goal = str(settings.get('goal') or '').strip()
+        # the producer's direction: what project.json recorded, else the question
+        # media_io was asked (echoed in the reference)
+        goal = str(settings.get('goal') or self._ref.get('question') or '').strip()
         chunks = chunk_sentences(sentences, int(cfg['chunk_minutes']) * 60_000, int(cfg['overlap_seconds']) * 1000)
         # ask for enough proposals overall that refine can be picky
         per_part = min(8, max(int(cfg['per_chunk']), math.ceil(want * 1.5 / max(1, len(chunks)))))
@@ -298,6 +302,7 @@ class IInstance(IInstanceBase):
                         'sample_metadata': self._sample_metadata,
                         'parts': [{'index': i, 'start_ms': c[0]['start_ms'], 'end_ms': c[-1]['end_ms'], 'sentences': len(c)}
                                   for i, c in enumerate(chunks)]})
+            self._record_media(store, project, data, media, settings, goal)
             update_status(store, project, NODE, 'transcribed', pipe, sentences=len(sentences), parts=len(chunks),
                           duration_ms=duration_ms, resumed=len(self._prior), seconds=round(time.time() - self._t0, 1))
 
@@ -313,7 +318,28 @@ class IInstance(IInstanceBase):
             warning(f'{NODE}: neither an LLM (questions) nor an index (documents) is wired to this node')
 
         if self.instance.hasListener('text'):
-            self.instance.writeText(json.dumps({**self._ref, 'transcript': {'sentences': len(sentences), 'parts': len(chunks)}}))
+            self.instance.writeText(json.dumps({**self._ref, **project.to_ref(),
+                                                'transcript': {'sentences': len(sentences), 'parts': len(chunks)}}))
+
+    @staticmethod
+    def _record_media(store, project: Project, data: dict, media: dict, settings: dict, goal: str) -> None:
+        """
+        project.json keeps the recording's numbers (every later node reads them
+        there) and the fact that an analysis is under way — media_io is generic
+        and writes neither.
+        """
+        try:
+            if media:
+                data['media'] = {k: media.get(k) for k in ('duration_ms', 'width', 'height', 'fps', 'has_video')}
+            if goal and not (settings or {}).get('goal'):
+                data.setdefault('settings', {})['goal'] = goal
+            analysis = dict(data.get('analysis') or {})
+            if analysis.get('status') != 'analyzing':
+                analysis.update({'status': 'analyzing', 'started_at': analysis.get('started_at') or time.time()})
+                data['analysis'] = analysis
+            save_project(store, project, data)
+        except Exception as exc:  # noqa: BLE001
+            debug(f'{NODE}: could not record the media in project.json: {exc}')
 
     def _index(self, store, project: Project, pipe, sentences: list[dict]) -> None:
         """Passages for the semantic index; the stock embedding + store nodes downstream do the rest."""

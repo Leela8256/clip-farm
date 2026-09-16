@@ -185,7 +185,22 @@ export async function runStudioExport(episodeId: string, onProgress?: ProgressHa
   const context = [`project: ${projectRoot(episodeId)}`, "studio: export"];
   if (options?.size) context.push(`size: ${options.size}`);
   const result = await runStudioQuestion("studio-export", context, "export the episode", onProgress);
-  return toStudioReport(pickManifest(result) ?? {});
+  const report = toStudioReport(pickManifest(result) ?? {});
+  // the render node no longer writes the project's studio registry — stamp it here (best effort)
+  if (!report.error && report.version != null && Object.keys(report.files ?? {}).length) {
+    try {
+      const root = projectRoot(episodeId);
+      const project = await readJsonOr<Record<string, unknown> | null>(`${root}/project.json`, null);
+      if (project) {
+        const studio = ((project.studio as Record<string, unknown>) ??= {});
+        studio[String(report.version)] = { files: report.files, duration_ms: report.duration_ms, rendered_at: Date.now() / 1000 };
+        await writeJson(`${root}/project.json`, project);
+      }
+    } catch {
+      /* derivable — never fail the export over the stamp */
+    }
+  }
+  return report;
 }
 
 // ------------------------------------------------------------------- reading

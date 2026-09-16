@@ -10,7 +10,7 @@
   "path": "local_nodes.podcast_prepare_clip",
   "prefix": "podcast_prepare_clip",
   "description": [
-    "Resolves one clip of an analysed episode (an analysis candidate, a Prompt Director candidate, a saved edit version, or explicit start/end) into a render-ready plan: extracts the interval, aligns word timestamps with faster-whisper, snaps the boundaries to word edges, plans filler/pause edits with safety rules (smart / cut / mute / keep, per-cut restore), fits the duration to the requested target (natural / strict / maximum \u2014 never through a word) and writes analysis/clips/<id>/plan.json + compliance.json. The plan goes out on the text lane (for podcast_layout / podcast_render) and, when a video listener is wired, a small copy of the clip goes out on the video lane for the stock frame grabber + pose estimator (phase 2 layouts). Chat context lines: 'project:', 'clip:', optional 'start:', 'end:', 'title:', 'captions:', 'layouts:', 'fillers:', 'silences:', 'duration:', 'mode:', 'version:', 'restore:', 'layout: auto|solo|stacked|screen|full|original', 'model: tiny|base|small|medium|large-v3' (word-timing model override for this render), 'subject: p2'."
+    "Resolves one clip of an analysed episode (an analysis candidate, a Prompt Director candidate, a saved edit version, or explicit start/end) into a render-ready plan: extracts the interval, aligns word timestamps with faster-whisper, snaps the boundaries to word edges, plans filler/pause edits with safety rules (smart / cut / mute / keep, per-cut restore), fits the duration to the requested target (natural / strict / maximum \u2014 never through a word) and writes analysis/clips/<id>/plan.json + compliance.json. The generic render spec goes out on the text lane (for speaker_framing / media_render) and, when a video listener is wired, a small copy of the clip goes out on the video lane for the stock frame grabber + pose estimator (phase 2 layouts). Chat context lines: 'project:', 'clip:', optional 'start:', 'end:', 'title:', 'captions:', 'layouts:', 'fillers:', 'silences:', 'duration:', 'mode:', 'version:', 'restore:', 'layout: auto|solo|stacked|screen|full|original', 'model: tiny|base|small|medium|large-v3' (word-timing model override for this render), 'subject: p2'. Render settings for the spec it emits: 'render_mode: preview | export', size, layouts, fps, crf, preset, captions, sidecars (or 'render: preview|export' in the question)."
   ],
   "icon": "podcast-prepare-clip.svg",
   "documentation": "https://docs.rocketride.org",
@@ -30,7 +30,49 @@
         "filler_policy": "smart",
         "silence_policy": "tighten",
         "caption_preset": "classic",
-        "level_check": true
+        "level_check": true,
+        "render_mode": "preview",
+        "size": 960,
+        "layouts": "vertical",
+        "fps": 30,
+        "crf": 28,
+        "preset": "ultrafast",
+        "captions": true,
+        "sidecars": false
+      },
+      "preview": {
+        "model": "medium",
+        "language": "en",
+        "pad_seconds": 2,
+        "filler_policy": "smart",
+        "silence_policy": "tighten",
+        "caption_preset": "classic",
+        "level_check": true,
+        "render_mode": "preview",
+        "size": 960,
+        "layouts": "vertical",
+        "fps": 30,
+        "crf": 28,
+        "preset": "ultrafast",
+        "captions": true,
+        "sidecars": false
+      },
+      "export": {
+        "model": "medium",
+        "language": "en",
+        "pad_seconds": 2,
+        "filler_policy": "smart",
+        "silence_policy": "tighten",
+        "caption_preset": "classic",
+        "level_check": true,
+        "render_mode": "export",
+        "size": 1920,
+        "layouts": "vertical,wide",
+        "fps": 30,
+        "crf": 20,
+        "preset": "veryfast",
+        "captions": true,
+        "sidecars": true
       }
     }
   },
@@ -151,7 +193,15 @@
         "podcast_prepare_clip.filler_policy",
         "podcast_prepare_clip.silence_policy",
         "podcast_prepare_clip.caption_preset",
-        "podcast_prepare_clip.level_check"
+        "podcast_prepare_clip.level_check",
+        "podcast_prepare_clip.render_mode",
+        "podcast_prepare_clip.size",
+        "podcast_prepare_clip.layouts",
+        "podcast_prepare_clip.fps",
+        "podcast_prepare_clip.crf",
+        "podcast_prepare_clip.preset",
+        "podcast_prepare_clip.captions",
+        "podcast_prepare_clip.sidecars"
       ]
     },
     "podcast_prepare_clip.profile": {
@@ -162,6 +212,14 @@
         [
           "default",
           "Default"
+        ],
+        [
+          "preview",
+          "Preview"
+        ],
+        [
+          "export",
+          "Export"
         ]
       ],
       "conditional": [
@@ -170,7 +228,109 @@
           "properties": [
             "podcast_prepare_clip.default"
           ]
+        },
+        {
+          "value": "preview",
+          "properties": [
+            "podcast_prepare_clip.preview"
+          ]
+        },
+        {
+          "value": "export",
+          "properties": [
+            "podcast_prepare_clip.export"
+          ]
         }
+      ]
+    },
+    "podcast_prepare_clip.render_mode": {
+      "type": "string",
+      "title": "What the render this plan feeds produces",
+      "default": "preview",
+      "enum": [
+        [
+          "preview",
+          "previews/ (fast, low-res)"
+        ],
+        [
+          "export",
+          "exports/ (final)"
+        ]
+      ]
+    },
+    "podcast_prepare_clip.size": {
+      "type": "number",
+      "title": "Vertical long edge (px)",
+      "default": 960
+    },
+    "podcast_prepare_clip.layouts": {
+      "type": "string",
+      "title": "Render passes (vertical, wide)",
+      "default": "vertical"
+    },
+    "podcast_prepare_clip.fps": {
+      "type": "number",
+      "title": "Frame rate cap",
+      "default": 30
+    },
+    "podcast_prepare_clip.crf": {
+      "type": "number",
+      "title": "x264 quality (CRF)",
+      "default": 28
+    },
+    "podcast_prepare_clip.preset": {
+      "type": "string",
+      "title": "x264 preset",
+      "default": "ultrafast"
+    },
+    "podcast_prepare_clip.captions": {
+      "type": "boolean",
+      "title": "Burn captions into the picture",
+      "default": true
+    },
+    "podcast_prepare_clip.sidecars": {
+      "type": "boolean",
+      "title": "Write SRT / VTT next to the file",
+      "default": false
+    },
+    "podcast_prepare_clip.preview": {
+      "object": "preview",
+      "properties": [
+        "podcast_prepare_clip.model",
+        "podcast_prepare_clip.language",
+        "podcast_prepare_clip.pad_seconds",
+        "podcast_prepare_clip.filler_policy",
+        "podcast_prepare_clip.silence_policy",
+        "podcast_prepare_clip.caption_preset",
+        "podcast_prepare_clip.level_check",
+        "podcast_prepare_clip.render_mode",
+        "podcast_prepare_clip.size",
+        "podcast_prepare_clip.layouts",
+        "podcast_prepare_clip.fps",
+        "podcast_prepare_clip.crf",
+        "podcast_prepare_clip.preset",
+        "podcast_prepare_clip.captions",
+        "podcast_prepare_clip.sidecars"
+      ]
+    },
+    "podcast_prepare_clip.export": {
+      "object": "export",
+      "properties": [
+        "podcast_prepare_clip.model",
+        "podcast_prepare_clip.language",
+        "podcast_prepare_clip.pad_seconds",
+        "podcast_prepare_clip.filler_policy",
+        "podcast_prepare_clip.silence_policy",
+        "podcast_prepare_clip.caption_preset",
+        "podcast_prepare_clip.level_check",
+        "podcast_prepare_clip.render_mode",
+        "podcast_prepare_clip.size",
+        "podcast_prepare_clip.layouts",
+        "podcast_prepare_clip.fps",
+        "podcast_prepare_clip.crf",
+        "podcast_prepare_clip.preset",
+        "podcast_prepare_clip.captions",
+        "podcast_prepare_clip.sidecars"
       ]
     }
   },

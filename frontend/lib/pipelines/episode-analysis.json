@@ -22,7 +22,7 @@
     },
     {
       "id": "ingest",
-      "provider": "podcast_ingest",
+      "provider": "media_io",
       "config": {
         "profile": "default",
         "default": {
@@ -143,39 +143,6 @@
       }
     },
     {
-      "id": "refine",
-      "provider": "podcast_refine",
-      "config": {
-        "profile": "default",
-        "default": {
-          "candidates": 10,
-          "min_seconds": 20,
-          "max_seconds": 90
-        },
-        "parameters": {}
-      },
-      "input": [
-        {
-          "lane": "answers",
-          "from": "llm"
-        },
-        {
-          "lane": "text",
-          "from": "segment"
-        }
-      ],
-      "ui": {
-        "position": {
-          "x": 1120,
-          "y": 200
-        },
-        "measured": {
-          "width": 150,
-          "height": 66
-        }
-      }
-    },
-    {
       "id": "response",
       "provider": "response_answers",
       "config": {
@@ -184,7 +151,7 @@
       "input": [
         {
           "lane": "answers",
-          "from": "refine"
+          "from": "llm"
         }
       ],
       "ui": {

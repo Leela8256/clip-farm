@@ -346,38 +346,8 @@ def filler_cuts(words: list[dict], total_ms: int, pad_ms: int = 10) -> list[tupl
     return cuts
 
 
-class TimelineMap:
-    """
-    Maps a time in the clip's source audio to the rendered output timeline,
-    given the keep segments and the crossfade applied at each join.
-    """
-
-    def __init__(self, segments: list[tuple[int, int]], crossfades: list[int] | None = None):
-        self.segments = [tuple(s) for s in segments]
-        crossfades = crossfades or [0] * max(0, len(self.segments) - 1)
-        self.offsets: list[int] = []
-        out = 0
-        for i, (start, end) in enumerate(self.segments):
-            if i > 0:
-                out -= crossfades[i - 1]
-            self.offsets.append(out)
-            out += end - start
-        self.total_ms = out
-
-    def to_output(self, t_ms: int) -> int | None:
-        for (start, end), offset in zip(self.segments, self.offsets):
-            if start <= t_ms <= end:
-                return offset + (t_ms - start)
-        return None
-
-
-def map_words_to_output(words: list[dict], timeline: TimelineMap) -> list[dict]:
-    """Re-time words onto the rendered timeline; words inside a cut are dropped."""
-    mapped = []
-    for w in words:
-        start = timeline.to_output(w['start_ms'])
-        end = timeline.to_output(w['end_ms'])
-        if start is None or end is None or end <= start:
-            continue
-        mapped.append({**w, 'start_ms': start, 'end_ms': end})
-    return mapped
+# The source-time -> rendered-time mapping moved into the renderer's library
+# with the node (`local_nodes/media_render/render_lib.py`); it is pure geometry
+# and the generic node may not import this module. Re-exported so every
+# existing importer keeps working.
+from local_nodes.media_render.render_lib import TimelineMap, map_words_to_output  # noqa: E402,F401

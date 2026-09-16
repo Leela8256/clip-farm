@@ -32,7 +32,15 @@
           "filler_policy": "smart",
           "silence_policy": "tighten",
           "caption_preset": "classic",
-          "level_check": true
+          "level_check": true,
+          "render_mode": "export",
+          "size": 1920,
+          "layouts": "vertical,wide",
+          "fps": 30,
+          "crf": 20,
+          "preset": "veryfast",
+          "captions": true,
+          "sidecars": true
         },
         "parameters": {}
       },
@@ -113,16 +121,10 @@
     },
     {
       "id": "layout",
-      "provider": "podcast_layout",
+      "provider": "speaker_framing",
       "config": {
-        "profile": "default",
-        "default": {
-          "mode": "auto",
-          "sample_ms": 200,
-          "detect_width": 640,
-          "canvas_width": 1080,
-          "canvas_height": 1920
-        },
+        "profile": "plan",
+        "plan": {},
         "parameters": {}
       },
       "input": [
@@ -152,7 +154,7 @@
     },
     {
       "id": "render",
-      "provider": "podcast_render",
+      "provider": "media_render",
       "config": {
         "profile": "export",
         "export": {

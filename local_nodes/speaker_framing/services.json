@@ -1,0 +1,68 @@
+{
+  "title": "Speaker Framing",
+  "protocol": "speaker_framing://",
+  "classType": ["text"],
+  "capabilities": [],
+  "register": "filter",
+  "node": "python",
+  "path": "local_nodes.speaker_framing",
+  "prefix": "speaker_framing",
+  "description": [
+    "Framing decisions for talking-head video. Joins a pose/face detector's per-frame person lists (text lane) with the frame grabber's frame table (table lane) and the caller's JSON (text lane, a `framing` block carrying the run's settings). In `plan` mode it tracks people across frames, estimates who is talking from head motion gated by word timings, plans dwell-limited layouts (solo follow, two-person stacked, side by side, screen share, full frame, fixed crop, original) with smoothed face-safe crop paths, scores the result (speaker visible %, layout changes, pan speed, face-safe checks) and merges the plan into the incoming JSON under `framing_plan` for a renderer downstream. In `scan` mode it clusters the sparse samples into the people on screen (position, size, presence timeline, a thumbnail each) and detects shot changes. Every path is caller-supplied: `write_to` (layout.json, or people.json + scenes.json), `thumbnails_to`, `status_to`."
+  ],
+  "icon": "speaker-framing.svg",
+  "documentation": "https://docs.rocketride.org",
+  "lanes": {
+    "questions": ["text", "answers"],
+    "text": ["text", "answers"],
+    "table": ["text", "answers"]
+  },
+  "preconfig": {
+    "default": "plan",
+    "profiles": {
+      "plan": { "mode": "plan", "layout": "auto", "sample_ms": 200, "detect_width": 640, "canvas_width": 1080, "canvas_height": 1920, "dwell_ms": 2000, "pan_cap": 0.5, "scenes": false, "scene_threshold": 0.35 },
+      "scan": { "mode": "scan", "layout": "auto", "sample_ms": 2000, "detect_width": 0, "canvas_width": 1080, "canvas_height": 1920, "dwell_ms": 2000, "pan_cap": 0.5, "scenes": true, "scene_threshold": 0.35 }
+    }
+  },
+  "fields": {
+    "speaker_framing.mode": {
+      "type": "string",
+      "title": "What to produce",
+      "default": "plan",
+      "enum": [["plan", "Framing plan for one piece of video"], ["scan", "People and shot changes for a whole recording"]]
+    },
+    "speaker_framing.layout": {
+      "type": "string",
+      "title": "Layout",
+      "default": "auto",
+      "enum": [["auto", "Auto (follow the speaker, stack two people)"], ["solo_follow", "Solo follow"], ["stacked_two", "Two-person stacked"], ["side_by_side", "Two-person side by side"], ["screen_share", "Shared screen + speaker"], ["full_frame", "Full frame on blur"], ["original", "Original framing"]]
+    },
+    "speaker_framing.sample_ms": { "type": "number", "title": "Sample interval of the frames (ms) — must match the frame grabber", "default": 200 },
+    "speaker_framing.detect_width": { "type": "number", "title": "Width the detections were made at (px, 0 = source pixels)", "default": 640 },
+    "speaker_framing.canvas_width": { "type": "number", "title": "Canvas width the crop windows are planned for", "default": 1080 },
+    "speaker_framing.canvas_height": { "type": "number", "title": "Canvas height the crop windows are planned for", "default": 1920 },
+    "speaker_framing.dwell_ms": { "type": "number", "title": "Minimum time a layout holds (ms)", "default": 2000 },
+    "speaker_framing.pan_cap": { "type": "number", "title": "Pan speed limit (crop widths per second)", "default": 0.5 },
+    "speaker_framing.scenes": { "type": "boolean", "title": "Scan: detect shot changes", "default": true },
+    "speaker_framing.scene_threshold": { "type": "number", "title": "Scan: scene change threshold (0-1)", "default": 0.35 },
+    "speaker_framing.plan": {
+      "object": "plan",
+      "properties": ["speaker_framing.mode", "speaker_framing.layout", "speaker_framing.sample_ms", "speaker_framing.detect_width", "speaker_framing.canvas_width", "speaker_framing.canvas_height", "speaker_framing.dwell_ms", "speaker_framing.pan_cap"]
+    },
+    "speaker_framing.scan": {
+      "object": "scan",
+      "properties": ["speaker_framing.mode", "speaker_framing.sample_ms", "speaker_framing.detect_width", "speaker_framing.scenes", "speaker_framing.scene_threshold"]
+    },
+    "speaker_framing.profile": {
+      "type": "string",
+      "title": "Profile",
+      "default": "plan",
+      "enum": [["plan", "Plan"], ["scan", "Scan"]],
+      "conditional": [
+        { "value": "plan", "properties": ["speaker_framing.plan"] },
+        { "value": "scan", "properties": ["speaker_framing.scan"] }
+      ]
+    }
+  },
+  "shape": [{ "section": "Pipe", "title": "Speaker Framing", "properties": ["speaker_framing.profile"] }]
+}

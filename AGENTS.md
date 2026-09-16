@@ -13,6 +13,21 @@ transcript index (Qdrant via docker-compose; `rocketride_vector` in a hosted dep
 Everything a project needs lives in the account file store under `projects/<episode>/`
 (see `docs/ARCHITECTURE.md`).
 
+## Node architecture after the generalization pass (2026-09-01)
+
+Three custom nodes are GENERIC and PR-ready for rocketride-server (contracts hold no podcast semantics;
+every store path arrives explicitly via context/spec: `source:`, `write_to:`, `report_to:`, `status_to:`):
+- `media_io` — probe / transcribe piece-feed / detect copy / slice (mode from context or listeners)
+- `speaker_framing` — framing plans (`plan`) and people/scene scans (`scan`); math in podcast_common/visual.py
+- `media_render` — the generic EDL/timeline renderer; full spec schema = the docstring of media_render/plan.py;
+  ffmpeg library lives in media_render/render_lib.py (podcast_common/media.py is a re-export shim)
+Two app-glue nodes remain: `podcast_segment` (transcript assembly, scoring questions, passages) and
+`podcast_prepare_clip` (candidate/edit resolution + planning → generic specs via podcast_common/render_spec.py).
+`podcast_refine` is GONE: the browser refines (frontend/lib/refine.ts — differentially tested against the
+python twin podcast_common/refine.py, which the CLI uses). The render/scan nodes no longer write
+project.json registries or compliance — the browser stamps `project.clips/*`, `project.studio/*` and
+`project.visual` after each run (engine.ts / studio-engine.ts).
+
 ## Golden rule: stock nodes first
 
 Use a stock node whenever one does the job (`audio_transcribe`, `embedding_transformer`,
@@ -130,16 +145,16 @@ shared with `tools/prompts.py`) so the pipelines stay stock all the way to the L
 ## File map
 
 ```
-.rocketride/episode-analysis.pipe    chat → podcast_ingest → audio_transcribe → podcast_segment → llm_anthropic → podcast_refine → response_answers
-.rocketride/transcript-index.pipe    chat → podcast_ingest → podcast_segment → embedding_transformer → qdrant (+ response_text)
+.rocketride/episode-analysis.pipe    chat → media_io → audio_transcribe → podcast_segment → llm_anthropic → response_answers (the BROWSER/CLI refines)
+.rocketride/transcript-index.pipe    chat → media_io → podcast_segment → embedding_transformer → qdrant (+ response_text)
 .rocketride/transcript-search.pipe   chat → embedding_transformer → qdrant → response_documents
 .rocketride/director-chat.pipe       chat → llm_anthropic → response_answers (parse, revise)
 .rocketride/prompt-director.pipe     chat → embedding_transformer → qdrant → llm_anthropic → podcast_refine → response_answers
 .rocketride/prompt-director-full.pipe chat → llm_anthropic → podcast_refine → response_answers (no index)
 .rocketride/podcast-studio-prepare.pipe   chat → podcast_prepare_clip (studio: init | spec) → response_answers
-.rocketride/podcast-studio-preview.pipe   chat → podcast_prepare_clip → podcast_render (rough/range) → response_answers
-.rocketride/podcast-studio-export.pipe    chat → podcast_prepare_clip → podcast_render (episode export) → response_answers
-.rocketride/visual-scan.pipe         chat → podcast_ingest → frame_grabber → pose_estimation → podcast_visual → response_answers
+.rocketride/podcast-studio-preview.pipe   chat → podcast_prepare_clip → media_render (rough/range) → response_answers
+.rocketride/podcast-studio-export.pipe    chat → podcast_prepare_clip → media_render (episode export) → response_answers
+.rocketride/visual-scan.pipe         chat → media_io → frame_grabber → pose_estimation → speaker_framing(scan) → response_answers
 .rocketride/clip-preview.pipe        chat → podcast_prepare_clip → (frame_grabber → pose_estimation) → podcast_layout → podcast_render[preview] → response_answers
 .rocketride/clip-export.pipe         chat → podcast_prepare_clip → (frame_grabber → pose_estimation) → podcast_layout → podcast_render[export] → response_answers
 local_nodes/podcast_common/          store · cache · project · media · clips · spec · constraints · editing · passages · captions · align · visual · config
@@ -160,6 +175,7 @@ frontend/lib/studio.ts + studio-engine.ts  episode-edit model (undo/redo, sugges
 frontend/lib/library.ts              My Projects listing, collections (library/collections), project writers — fail-closed
 frontend/lib/brand.ts                brand templates (brand-templates/<id>/), CaptionStyle + 9-gallery presets, resolveBrand hash
 frontend/lib/batch.ts                multi-project clip batches (library/batches), parse-once + bounded pool of 2
+frontend/lib/refine.ts               the refine twin (constraints/ranking/file assembly — differential-tested vs python)
 frontend/components/podcast/         NewEpisodeForm · StatusTimeline · PromptDirector · ChapterStrip · CandidateCard · ClipWorkbench · SoundTools · ComplianceBadges · TranscriptPanel
 frontend/lib/engine.ts               connection, store helpers, pipeline runs (analysis, index, visual scan, search, parse, director, revise, clips)
 frontend/lib/podcast.ts              types, manifest/report normalisation, status text, formatting

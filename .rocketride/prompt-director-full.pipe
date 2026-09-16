@@ -3,43 +3,79 @@
     {
       "id": "chat_source",
       "provider": "chat",
-      "config": { "hideForm": true, "mode": "Source", "parameters": {}, "type": "chat" },
-      "ui": { "position": { "x": 20, "y": 200 }, "measured": { "width": 150, "height": 66 } }
+      "config": {
+        "hideForm": true,
+        "mode": "Source",
+        "parameters": {},
+        "type": "chat"
+      },
+      "ui": {
+        "position": {
+          "x": 20,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
     },
     {
       "id": "llm",
       "provider": "llm_anthropic",
       "config": {
         "profile": "claude-sonnet-4-6",
-        "claude-sonnet-4-6": { "apikey": "${ROCKETRIDE_ANTHROPIC_KEY}" },
-        "parameters": {}
-      },
-      "input": [{ "lane": "questions", "from": "chat_source" }],
-      "ui": { "position": { "x": 240, "y": 200 }, "measured": { "width": 150, "height": 66 } }
-    },
-    {
-      "id": "refine",
-      "provider": "podcast_refine",
-      "config": {
-        "profile": "default",
-        "default": { "candidates": 10, "min_seconds": 20, "max_seconds": 90, "target_seconds": 45 },
+        "claude-sonnet-4-6": {
+          "apikey": "${ROCKETRIDE_ANTHROPIC_KEY}"
+        },
         "parameters": {}
       },
       "input": [
-        { "lane": "answers", "from": "llm" },
-        { "lane": "questions", "from": "chat_source" }
+        {
+          "lane": "questions",
+          "from": "chat_source"
+        }
       ],
-      "ui": { "position": { "x": 460, "y": 200 }, "measured": { "width": 150, "height": 66 } }
+      "ui": {
+        "position": {
+          "x": 240,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
     },
     {
       "id": "response",
       "provider": "response_answers",
-      "config": { "laneName": "answers" },
-      "input": [{ "lane": "answers", "from": "refine" }],
-      "ui": { "position": { "x": 680, "y": 200 }, "measured": { "width": 150, "height": 66 } }
+      "config": {
+        "laneName": "answers"
+      },
+      "input": [
+        {
+          "lane": "answers",
+          "from": "llm"
+        }
+      ],
+      "ui": {
+        "position": {
+          "x": 680,
+          "y": 200
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        }
+      }
     }
   ],
   "project_id": "0562cb44-b743-4b8c-9a12-406d7bbd47a6",
-  "viewport": { "x": 0, "y": 0, "zoom": 1 },
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
   "version": 1
 }

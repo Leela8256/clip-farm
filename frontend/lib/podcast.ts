@@ -6,6 +6,7 @@
 
 import type { Compliance, EditVersion } from "./director";
 import type { CaptionStyle, ResolvedBrand } from "./brand";
+import { DIRECTOR_WEIGHTS, SCORE_WEIGHTS, weightedScore } from "./refine";
 
 export type PipeKind = "analysis" | "preview" | "export" | "chat" | "director" | "director-full" | "index" | "search" | "visual";
 
@@ -299,7 +300,11 @@ function num(value: unknown, fallback = 0): number {
   return typeof n === "number" && Number.isFinite(n) ? n : fallback;
 }
 
-function parseAnswers(result: unknown): unknown[] {
+/**
+ * Every payload the answers lane carried, oldest first: the node manifests and
+ * the LLM's own answers (which the browser refines itself — see lib/refine.ts).
+ */
+export function answerPayloads(result: unknown): unknown[] {
   const r = asRecord(result);
   const items = Array.isArray(r.answers) ? r.answers : [];
   return items.map((item) => {
@@ -322,7 +327,7 @@ function parseAnswers(result: unknown): unknown[] {
  * the manifest is the last payload that names the project.
  */
 export function pickManifest(result: unknown): Record<string, unknown> | null {
-  const parsed = parseAnswers(result);
+  const parsed = answerPayloads(result);
   for (let i = parsed.length - 1; i >= 0; i--) {
     const rec = asRecord(parsed[i]);
     if (typeof rec.project === "string") return rec;
@@ -333,7 +338,7 @@ export function pickManifest(result: unknown): Record<string, unknown> | null {
 
 /** The first JSON object the LLM answered with (director-chat pipe: parse / revise). */
 export function firstJsonAnswer(result: unknown): Record<string, unknown> | null {
-  for (const value of parseAnswers(result)) {
+  for (const value of answerPayloads(result)) {
     if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
   }
   return null;
@@ -369,12 +374,9 @@ export function toCandidate(raw: unknown, index = 0): Candidate {
   };
 }
 
+/** The weighted score behind a candidate: the directed rubric when the model scored the prompt match, else the analysis one (weights: lib/refine.ts). */
 export function overallScore(scores: Scores): number {
-  if (scores.prompt_match != null) {
-    const energy = scores.energy ?? 5;
-    return Math.round((scores.prompt_match * 0.35 + scores.hook * 0.25 + scores.standalone * 0.2 + scores.clarity * 0.1 + energy * 0.1) * 100) / 100;
-  }
-  return Math.round((scores.hook * 0.4 + scores.standalone * 0.3 + scores.clarity * 0.3) * 100) / 100;
+  return weightedScore(scores, scores.prompt_match != null ? DIRECTOR_WEIGHTS : SCORE_WEIGHTS);
 }
 
 export function toCandidates(doc: unknown): Candidate[] {
@@ -556,12 +558,28 @@ export const ANALYSIS_STEPS: { key: string; label: string }[] = [
 ];
 
 /** Which analysis step a status event belongs to (-1 = failed). */
+const NODE_ALIASES: Record<string, string> = {
+  media_io: "podcast_ingest",
+  speaker_framing: "podcast_layout",
+  media_render: "podcast_render",
+};
+
+/** The stage switch keys on the historical node names; new generic nodes map onto them. */
+function canonicalNode(evt: StatusEvent): string {
+  const node = String(evt.node ?? "");
+  const mapped = NODE_ALIASES[node] ?? node;
+  // speaker_framing covers both old vision nodes; scan-mode stages belonged to podcast_visual
+  if (mapped === "podcast_layout" && ["people", "scenes", "scanned"].includes(String(evt.stage))) return "podcast_visual";
+  return mapped;
+}
+
 export function analysisStep(evt: StatusEvent | null | undefined): number {
   if (!evt) return 0;
   if (evt.stage === "error") return -1;
-  if (evt.node === "podcast_ingest") return evt.stage === "probing" || evt.stage === "splitting" ? 0 : 1;
-  if (evt.node === "podcast_segment") return 2;
-  if (evt.node === "podcast_refine") return evt.stage === "analyzed" ? 3 : 2;
+  const node = canonicalNode(evt);
+  if (node === "podcast_ingest") return evt.stage === "probing" || evt.stage === "splitting" ? 0 : 1;
+  if (node === "podcast_segment") return 2;
+  if (node === "podcast_refine") return evt.stage === "analyzed" ? 3 : 2;
   return 0;
 }
 
@@ -569,7 +587,7 @@ export function describeStatus(evt: StatusEvent | null | undefined): string {
   if (!evt) return "Getting ready";
   const n = (k: string) => (typeof evt[k] === "number" ? (evt[k] as number) : undefined);
   if (evt.stage === "error") return `Failed: ${evt.message ?? "unknown error"}`;
-  switch (`${evt.node}:${evt.stage}`) {
+  switch (`${canonicalNode(evt)}:${evt.stage}`) {
     case "podcast_ingest:probing":
       return "Reading the recording";
     case "podcast_ingest:splitting":
@@ -588,6 +606,7 @@ export function describeStatus(evt: StatusEvent | null | undefined): string {
       return n("passages") ? `Preparing transcript search · ${n("passages")} passages` : "Preparing transcript search";
     case "podcast_segment:indexed":
       return `Transcript search ready · ${n("passages") ?? 0} passages`;
+    // the selection step: written by the browser itself now (lib/refine.ts), under the name every stored status.json already carries
     case "podcast_refine:analyzed":
       return `${n("candidates") ?? 0} candidates ready${n("seconds") ? ` in ${Math.round(n("seconds")!)}s` : ""}`;
     case "podcast_refine:directed":

@@ -114,6 +114,66 @@ async def run_chat(client, pipe, context_lines, question_text):
     return await run_question(client, pipe, q)
 
 
+def all_payloads(result):
+    """Every parsed answer payload from the answers lane, in order."""
+    items = (result or {}).get("answers") if isinstance(result, dict) else None
+    out = []
+    for item in items or []:
+        value = item.get("answer", item) if isinstance(item, dict) and "answer" in item else item
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                pass
+        out.append(value)
+    return out
+
+
+async def refine_analysis_client(client, root, episode, result, goal, count):
+    """The pipes no longer carry podcast_refine — the caller refines, like the browser."""
+    from local_nodes.podcast_common.refine import refine_analysis
+    transcript = await read_json_or(client, f"{root}/analysis/transcript.json", {}) or {}
+    project = await read_json_or(client, f"{root}/project.json", {}) or {}
+    sentences = transcript.get("sentences") or []
+    duration_ms = int((project.get("media") or {}).get("duration_ms") or transcript.get("duration_ms") or 0)
+    settings = project.get("settings") or {}
+    payloads = all_payloads(result)
+    doc, chapters_doc, summary = refine_analysis(
+        payloads, sentences=sentences, duration_ms=duration_ms, episode_id=episode,
+        goal=goal, want=int(settings.get("clip_count") or count),
+        min_ms=int(settings.get("min_seconds") or 20) * 1000,
+        max_ms=int(settings.get("max_seconds") or 90) * 1000)
+    await client.fs_write_json(f"{root}/analysis/llm-answers.json",
+                               {"schema_version": 1, "generated": time.time(), "answers": payloads})
+    await client.fs_write_json(f"{root}/analysis/candidates.json", doc)
+    await client.fs_write_json(f"{root}/analysis/chapters.json", chapters_doc)
+    project["analysis"] = {"status": "analyzed", "candidates": len(summary["candidates"]),
+                           "proposed": summary["proposed"], "chapters": len(summary["chapters"]),
+                           "sentences": len(sentences), "parts": summary["parts"], "analyzed_at": time.time()}
+    await client.fs_write_json(f"{root}/project.json", project)
+    return {"project": root, "episode_id": episode, "goal": goal, **summary}
+
+
+async def refine_direct_client(client, root, request_id, result):
+    from local_nodes.podcast_common.refine import refine_direct
+    transcript = await read_json_or(client, f"{root}/analysis/transcript.json", {}) or {}
+    project = await read_json_or(client, f"{root}/project.json", {}) or {}
+    request = await read_json_or(client, f"{root}/analysis/requests/{request_id}.json", {}) or {}
+    sentences = transcript.get("sentences") or []
+    duration_ms = int((project.get("media") or {}).get("duration_ms") or transcript.get("duration_ms") or 0)
+    update, summary = refine_direct(all_payloads(result), request=request, request_id=request_id,
+                                    sentences=sentences, duration_ms=duration_ms)
+    request.update(update)
+    request["seconds"] = 0
+    await client.fs_write_json(f"{root}/analysis/requests/{request_id}.json", request)
+    requests = project.setdefault("requests", {})
+    requests[request_id] = {"prompt": request.get("prompt"), "summary": update["summary"],
+                            "delivered": len(update["candidates"]),
+                            "requested": update["compliance"]["requested"], "answered_at": update["answered_at"]}
+    await client.fs_write_json(f"{root}/project.json", project)
+    return {"project": root, "request_id": request_id, **summary}
+
+
 def manifest_of(result):
     """The node manifest: the answers lane carries every answer written along the
     path (the LLM's raw answers too), so take the last payload naming the project."""
@@ -207,7 +267,11 @@ async def main():
                 "settings": {"goal": goal, "clip_count": count, "min_seconds": 20, "max_seconds": 90},
                 "analysis": {"status": "analyzing", "started_at": time.time()},
             })
-            answer = manifest_of(await run_chat(client, PIPES["analyze"], [f"project: {root}"], goal))
+            ctx_lines = [f"project: {root}", f"source: {source}",
+                         f"status_to: {root}/status.json", f"write_to: {root}/analysis/media.json"]
+            result = await run_chat(client, PIPES["analyze"], ctx_lines, goal)
+            # no pipe carries podcast_refine any more - the caller always refines
+            answer = await refine_analysis_client(client, root, episode, result, goal, count)
             if isinstance(answer, dict) and "candidates" in answer:
                 print(f"proposed={answer.get('proposed')} parts={answer.get('parts')} kept={len(answer['candidates'])} "
                       f"chapters={len(answer.get('chapters') or [])} in {answer.get('seconds')}s")
@@ -220,7 +284,9 @@ async def main():
         elif cmd == "index":
             episode = sys.argv[2]
             root = f"projects/{episode}"
-            result = await run_chat(client, PIPES["index"], [f"project: {root}"], "index")
+            proj = await read_json_or(client, f"{root}/project.json", {}) or {}
+            result = await run_chat(client, PIPES["index"], [f"project: {root}", f"source: {proj.get('source')}",
+                                                             f"status_to: {root}/status.json"], "index")
             print(json.dumps(result, default=str)[:600])
             index = await read_json_or(client, f"{root}/analysis/index.json", {})
             print(f"index.json: {index.get('passages')} passages of {index.get('window_ms', 0) // 1000}s")
@@ -228,7 +294,12 @@ async def main():
         elif cmd == "visual":
             episode = sys.argv[2]
             root = f"projects/{episode}"
-            answer = manifest_of(await run_chat(client, PIPES["visual"], [f"project: {root}"], "scan"))
+            proj = await read_json_or(client, f"{root}/project.json", {}) or {}
+            answer = manifest_of(await run_chat(client, PIPES["visual"], [
+                f"project: {root}", f"source: {proj.get('source')}",
+                f"status_to: {root}/status.json",
+                f"write_to: {root}/analysis/visual", f"thumbnails_to: {root}/analysis/visual",
+                "echo.project: " + root, "echo.episode_id: " + episode], "scan"))
             if isinstance(answer, dict) and "people" in answer:
                 print(f"people={len(answer['people'])} scenes={answer.get('scenes')} frames={answer.get('frames')} in {answer.get('seconds')}s")
                 for p in answer["people"]:
@@ -287,7 +358,9 @@ async def main():
                 print(f"using the full transcript ({len(transcript_lines)} chars){'' if full else ' — no index'}")
             q = prompts.direct_question(request["prompt"], spec, window, root, request_id, episode,
                                         request.get("search_query") or "", transcript_lines)
-            answer = manifest_of(await run_question(client, PIPES["direct-full" if transcript_lines else "direct"], q, "direct"))
+            result = await run_question(client, PIPES["direct-full" if transcript_lines else "direct"], q, "direct")
+            # no pipe carries podcast_refine any more - the caller always refines
+            answer = await refine_direct_client(client, root, request_id, result)
             if isinstance(answer, dict) and "candidates" in answer:
                 comp = answer.get("compliance") or {}
                 print(f"{answer.get('summary')}\nproposed={answer.get('proposed')} delivered={comp.get('delivered')} "

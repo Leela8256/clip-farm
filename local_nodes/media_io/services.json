@@ -1,0 +1,60 @@
+{
+  "title": "Media IO",
+  "protocol": "media_io://",
+  "classType": ["video"],
+  "capabilities": [],
+  "register": "filter",
+  "node": "python",
+  "path": "local_nodes.media_io",
+  "prefix": "media_io",
+  "description": [
+    "Reads one media file from the account file store and hands it to the rest of the pipeline in the shape the next node needs. Every path it touches is named in the question context ('source: <store path>' is required): 'mode: auto | probe | transcribe_feed | detect_copy | slice', optional 'range: <a>-<b>' in ms, 'piece_seconds:', 'skip_pieces: 0,1,2', 'detect_width:', 'detect_fps:', 'video: yes', 'write_to:' (the probe JSON, or the prefix for slices) and 'status_to:' (progress file; absent = SSE only). probe writes and forwards {duration_ms, width, height, fps, has_video, has_audio, size}. transcribe_feed streams the audio as fixed-length 16 kHz mono WAV pieces, one stream per piece, so a transcriber's buffer-relative timestamps map back onto the source (piece offset + in-piece time, keyed by metadata.source.stream_index). detect_copy streams a small low-frame-rate copy (640 px / 10 fps) for frame grabbers and vision models. slice decodes a range to caller-named store paths. The text lane always carries a reference JSON: the media block, the streamed piece intervals in stream order, and the caller's own context keys echoed back."
+  ],
+  "icon": "media-io.svg",
+  "documentation": "https://docs.rocketride.org",
+  "lanes": {
+    "questions": ["audio", "video", "text"]
+  },
+  "preconfig": {
+    "default": "default",
+    "profiles": {
+      "default": {
+        "mode": "auto",
+        "chunk_kb": 1024,
+        "piece_seconds": 45,
+        "detect_width": 640,
+        "detect_fps": 10
+      }
+    }
+  },
+  "fields": {
+    "media_io.mode": {
+      "type": "string",
+      "title": "What to do with the file",
+      "default": "auto",
+      "enum": [
+        ["auto", "Auto (follow the wiring)"],
+        ["probe", "Probe only"],
+        ["transcribe_feed", "Audio pieces for a transcriber"],
+        ["detect_copy", "Small video copy for vision nodes"],
+        ["slice", "Decode a range to the store"]
+      ]
+    },
+    "media_io.chunk_kb": { "type": "number", "title": "Stream chunk size (KB)", "default": 1024 },
+    "media_io.piece_seconds": { "type": "number", "title": "Audio piece length sent to the transcriber (s, max 58)", "default": 45 },
+    "media_io.detect_width": { "type": "number", "title": "Detection copy width (px)", "default": 640 },
+    "media_io.detect_fps": { "type": "number", "title": "Detection copy frame rate", "default": 10 },
+    "media_io.default": {
+      "object": "default",
+      "properties": ["media_io.mode", "media_io.chunk_kb", "media_io.piece_seconds", "media_io.detect_width", "media_io.detect_fps"]
+    },
+    "media_io.profile": {
+      "hidden": true,
+      "type": "string",
+      "default": "default",
+      "enum": [["default", "Default"]],
+      "conditional": [{ "value": "default", "properties": ["media_io.default"] }]
+    }
+  },
+  "shape": [{ "section": "Pipe", "title": "Media IO", "properties": ["media_io.profile"] }]
+}

@@ -22,7 +22,7 @@
     },
     {
       "id": "ingest",
-      "provider": "podcast_ingest",
+      "provider": "media_io",
       "config": {
         "profile": "default",
         "default": {
@@ -108,14 +108,10 @@
     },
     {
       "id": "visual",
-      "provider": "podcast_visual",
+      "provider": "speaker_framing",
       "config": {
-        "profile": "default",
-        "default": {
-          "sample_seconds": 2,
-          "scenes": true,
-          "scene_threshold": 0.35
-        },
+        "profile": "scan",
+        "scan": {},
         "parameters": {}
       },
       "input": [

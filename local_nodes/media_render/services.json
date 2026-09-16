@@ -1,0 +1,80 @@
+{
+  "title": "Media Render",
+  "protocol": "media_render://",
+  "classType": ["video"],
+  "capabilities": [],
+  "register": "filter",
+  "node": "python",
+  "path": "local_nodes.media_render",
+  "prefix": "media_render",
+  "description": [
+    "Renders one edit-decision spec (a JSON document on the text lane) into finished media with the engine's ffmpeg: keep segments cut from audio and picture together, mutes and bleeps, clean-up and two-pass EBU R128 mastering, burned-in word captions, per-frame crop paths from a framing plan, watermark overlays, title cards and intro/outro material, ducked music, and any number of outputs (mp4 in any aspect, mp3, wav) with SRT/VTT sidecars, a thumbnail and chapter files. Long timelines render in resumable parts; every deliverable is probed and loudness-measured, and the report is written to the spec's report_to and returned on the answers lane."
+  ],
+  "icon": "media-render.svg",
+  "documentation": "https://docs.rocketride.org",
+  "lanes": {
+    "text": ["answers", "text"]
+  },
+  "preconfig": {
+    "default": "preview",
+    "profiles": {
+      "preview": {
+        "long_edge": 960,
+        "fps": 30,
+        "crf": 28,
+        "preset": "ultrafast",
+        "captions": true,
+        "sidecars": false,
+        "part_ms": 300000
+      },
+      "export": {
+        "long_edge": 1920,
+        "fps": 30,
+        "crf": 20,
+        "preset": "veryfast",
+        "captions": true,
+        "sidecars": true,
+        "part_ms": 300000
+      }
+    }
+  },
+  "fields": {
+    "media_render.long_edge": { "type": "number", "title": "Default long edge in pixels (an output may state its own size)", "default": 1920 },
+    "media_render.fps": { "type": "number", "title": "Default frames per second", "default": 30 },
+    "media_render.crf": { "type": "number", "title": "Default x264 quality (lower = better)", "default": 20 },
+    "media_render.preset": {
+      "type": "string",
+      "title": "Default x264 speed preset",
+      "default": "veryfast",
+      "enum": [["ultrafast", "ultrafast"], ["veryfast", "veryfast"], ["fast", "fast"], ["medium", "medium"]]
+    },
+    "media_render.captions": { "type": "boolean", "title": "Allow burned-in captions", "default": true },
+    "media_render.sidecars": { "type": "boolean", "title": "Write SRT / VTT sidecars (unless the spec says otherwise)", "default": true },
+    "media_render.part_ms": { "type": "number", "title": "Resumable part length in milliseconds", "default": 300000 },
+    "media_render.preview": {
+      "object": "preview",
+      "properties": [
+        "media_render.long_edge", "media_render.fps", "media_render.crf", "media_render.preset",
+        "media_render.captions", "media_render.sidecars", "media_render.part_ms"
+      ]
+    },
+    "media_render.export": {
+      "object": "export",
+      "properties": [
+        "media_render.long_edge", "media_render.fps", "media_render.crf", "media_render.preset",
+        "media_render.captions", "media_render.sidecars", "media_render.part_ms"
+      ]
+    },
+    "media_render.profile": {
+      "type": "string",
+      "title": "Profile",
+      "default": "preview",
+      "enum": [["preview", "Preview"], ["export", "Export"]],
+      "conditional": [
+        { "value": "preview", "properties": ["media_render.preview"] },
+        { "value": "export", "properties": ["media_render.export"] }
+      ]
+    }
+  },
+  "shape": [{ "section": "Pipe", "title": "Media Render", "properties": ["media_render.profile"] }]
+}

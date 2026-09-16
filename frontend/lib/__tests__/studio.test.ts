@@ -742,7 +742,7 @@ describe("the editing proposal", () => {
     expect(proposal.schema_version).toBe(1);
   });
 
-  it("merges suggestions that overlap and drops what lands on an edit already made", () => {
+  it("merges overlapping suggestions; a stretch partly cut already stays, counting only what is left", () => {
     const edits = cut(base(26_000), 21_000, 22_000);
     const proposal = validateProposal(
       {
@@ -754,12 +754,26 @@ describe("the editing proposal", () => {
       },
       { sentences: proposalSentences, words: proposalWords, edits, durationMs: 26_000, id: "p02" }
     );
-    expect(proposal.items).toHaveLength(1);
-    expect(proposal.items[0]).toMatchObject({ start_ms: 2_000, end_ms: 10_000, confidence: 0.5 });
-    expect(proposal.dropped).toEqual([{ ref: "0:20–0:26", reason: "overlaps an edit you already made" }]);
+    expect(proposal.items).toHaveLength(2);
+    expect(proposal.items[0]).toMatchObject({ start_ms: 2_000, end_ms: 10_000, confidence: 0.5, saved_ms: 8_000 });
+    // the tangent overlaps the producer's own 21-22s cut: it stays on the list
+    // (badged in the panel) and only counts the 5s it would still remove
+    expect(proposal.items[1]).toMatchObject({ start_ms: 20_000, end_ms: 26_000, saved_ms: 5_000, status: "open" });
+    expect(proposal.dropped).toEqual([]);
     expect(proposal.totals.original_ms).toBe(25_000);
-    expect(proposal.totals.removed_ms).toBe(8_000);
-    expect(proposal.totals.proposed_ms).toBe(17_000);
+    expect(proposal.totals.removed_ms).toBe(13_000);
+    expect(proposal.totals.proposed_ms).toBe(12_000);
+  });
+
+  it("leaves out only a stretch the producer's cuts already remove entirely", () => {
+    const edits = cut(base(26_000), 19_000, 26_000);
+    const proposal = validateProposal(
+      { items: [{ sentences: [4, 4], action: "cut", reason: "tangent", category: "tangent", confidence: 0.9 }] },
+      { sentences: proposalSentences, words: proposalWords, edits, durationMs: 26_000, id: "p03" }
+    );
+    expect(proposal.items).toEqual([]);
+    expect(proposal.dropped).toEqual([{ ref: "0:20–0:26", reason: "already removed by your edits" }]);
+    expect(proposal.totals.removed_ms).toBe(0);
   });
 
   it("takes one, gives it back, takes every safe one and can be thrown away whole", () => {

@@ -587,7 +587,7 @@ def crop_size(layout: str, panel: str, width: int, height: int, out_w: int, out_
 
 
 def crop_path(track: dict, start_ms: int, end_ms: int, win_w: int, win_h: int, width: int, height: int,
-              sample_ms: int = SAMPLE_MS) -> list[list[int]]:
+              sample_ms: int = SAMPLE_MS, pan_cap: float = MAX_PAN_PER_S) -> list[list[int]]:
     """
     Keyframes [t_ms, x, y] (window top-left in source pixels) for one subject
     across a segment: the face centre exponentially smoothed with a dead zone
@@ -596,7 +596,7 @@ def crop_path(track: dict, start_ms: int, end_ms: int, win_w: int, win_h: int, w
     pts = [p for p in track['frames'] if start_ms - sample_ms <= p[0] <= end_ms + sample_ms]
     if not pts:
         pts = [_at(track, start_ms, 10 ** 9) or track['frames'][0]]
-    max_step = MAX_PAN_PER_S * win_w * sample_ms / 1000
+    max_step = pan_cap * win_w * sample_ms / 1000
     # a window barely wider than the face has no room for a dead zone: track closely
     face_w = sum(p[3] for p in pts) / len(pts)
     slack = max(0.0, win_w - face_w * (1 + 2 * FACE_MARGIN))
@@ -675,6 +675,8 @@ def build_layout(
     subject: str | None = None,
     focus: dict | None = None,
     sample_ms: int = SAMPLE_MS,
+    dwell_ms: int = DWELL_MS,
+    pan_cap: float = MAX_PAN_PER_S,
 ) -> dict:
     """The complete layout plan for one clip (see the module docstring)."""
     tracks = build_tracks(frames, width, height, sample_ms)
@@ -682,7 +684,8 @@ def build_layout(
     speech = speech_bins(words, total_ms)
     per_bin = speaker_per_bin(tracks, act, speech)
     speaking = smooth_speakers(per_bin)
-    segments = plan_segments(tracks, speaking, total_ms, width=width, height=height, mode=mode, subject=subject)
+    segments = plan_segments(tracks, speaking, total_ms, width=width, height=height, mode=mode, subject=subject,
+                             dwell_ms=dwell_ms)
     by_id = {t['id']: t for t in tracks}
 
     paths: list[dict] = []
@@ -701,13 +704,13 @@ def build_layout(
             panel = 'a' if k == 0 else 'b'
             win_w, win_h = crop_size(seg['layout'], panel, width, height, out_w, out_h,
                                      segment_face_h(track, seg['start_ms'], seg['end_ms'], height))
-            path = crop_path(track, seg['start_ms'], seg['end_ms'], win_w, win_h, width, height, sample_ms)
+            path = crop_path(track, seg['start_ms'], seg['end_ms'], win_w, win_h, width, height, sample_ms, pan_cap)
             v, c = face_safe(track, path, win_w, win_h, width, height)
             if c and v / c > 0.2 and (win_w < width and win_h < height):
                 # too tight for this person's movement: zoom out one step (same aspect) and re-check
                 factor = min(1.35, width / win_w, height / win_h)
                 win_w, win_h = int(win_w * factor) // 2 * 2, int(win_h * factor) // 2 * 2
-                path = crop_path(track, seg['start_ms'], seg['end_ms'], win_w, win_h, width, height, sample_ms)
+                path = crop_path(track, seg['start_ms'], seg['end_ms'], win_w, win_h, width, height, sample_ms, pan_cap)
                 v, c = face_safe(track, path, win_w, win_h, width, height)
             violations += v
             checked += c
@@ -734,7 +737,7 @@ def build_layout(
         'max_pan_widths_per_s': round(max_pan, 2),
         'face_cut_violations': violations,
         'face_checks': checked,
-        'smooth': max_pan <= MAX_PAN_PER_S + 1e-6,
+        'smooth': max_pan <= pan_cap + 1e-6,
     }
     return {
         'schema_version': 1,
@@ -759,7 +762,7 @@ def build_layout(
 def people_from_samples(frames: list[dict], width: int, height: int, sample_ms: int) -> list[dict]:
     """
     Persistent "people" over a sparsely sampled episode: positions cluster
-    (a podcast camera setup rarely moves), so faces are grouped by where and
+    (an interview camera setup rarely moves), so faces are grouped by where and
     how big they appear. Honest naming: these are screen positions, not
     identities.
     """

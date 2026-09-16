@@ -23,9 +23,15 @@ optional 'range: <a>-<b>' (output-timeline ms) and 'quality: rough | full'.
 The edit file's `corrections` (transcript fixes keyed by word id) are applied
 to the caption text on the way through; they never move a timestamp.
 
-Output (text lane): the clip plan (or, in studio mode, the episode spec) that
-podcast_render consumes, persisted at analysis/clips/<id>/plan.json next to
-compliance.json.
+Output (text lane): the GENERIC render spec (podcast_common/render_spec.py)
+that media_render consumes — the same document for a clip and for an episode,
+with every store path it may write named inside it. The app's own record is
+still written where it always was: analysis/clips/<id>/plan.json next to
+compliance.json for a clip, analysis/studio/prepared-v<n>.json for an episode.
+
+Which deliverables the spec asks for comes from this node's config
+(`render_mode: preview | export`, size / fps / crf / preset / layouts /
+captions / sidecars), or from a 'render: preview|export' context line.
 """
 
 from __future__ import annotations
@@ -51,7 +57,14 @@ from local_nodes.podcast_common.project import (
 )
 from local_nodes.podcast_common.cache import local_source
 from local_nodes.podcast_common.config import as_bool
-from local_nodes.podcast_common.media import DETECT_FPS, DETECT_WIDTH, detect_silences, measure_levels, slice_audio, slice_video_for_detection
+from local_nodes.podcast_common.media import (
+    DETECT_FPS,
+    DETECT_WIDTH,
+    detect_silences,
+    measure_levels,
+    slice_audio,
+    slice_video_for_detection,
+)
 from local_nodes.podcast_common.align import align_words
 from local_nodes.podcast_common.clips import FILLERS, locate_span, parse_timestamp, snap_to_word_boundaries, words_in_range
 from local_nodes.podcast_common.editing import (
@@ -66,6 +79,12 @@ from local_nodes.podcast_common.editing import (
 )
 from local_nodes.podcast_common.captions import resolve_caption_style, style_is_off
 from local_nodes.podcast_common.spec import CAPTION_PRESETS, RENDERABLE_ASPECTS, duration_window, normalize_spec
+from local_nodes.podcast_common.render_spec import (
+    clip_framing,
+    clip_render_spec,
+    studio_preview_name,
+    studio_render_spec,
+)
 from local_nodes.podcast_common.constraints import find_profanity
 from local_nodes.podcast_common import studio as studio_lib
 
@@ -150,8 +169,9 @@ class IInstance(IInstanceBase):
         try:
             if step:                                    # whole-episode editing studio
                 spec, manifest = self._studio(store, project, ctx, step, pipe)
-            else:                                       # one clip (unchanged)
-                spec, manifest = self._prepare(store, project, ctx, question_text(question), pipe), None
+            else:                                       # one clip
+                plan = self._prepare(store, project, ctx, question_text(question), pipe)
+                spec, manifest = self._clip_spec(project, ctx, plan), None
         except Exception as exc:  # noqa: BLE001
             update_status(store, project, NODE, 'error', pipe, clip=ctx.get('clip'), studio=step or None,
                           message=str(exc))
@@ -163,6 +183,64 @@ class IInstance(IInstanceBase):
             answer.setAnswer(manifest)
             self.instance.writeAnswers(answer)
 
+    # ------------------------------------------------------------ render spec
+    #
+    # What leaves this node on the text lane is the generic render spec: the
+    # renderer behind it is told which file to cut, what to cut, how it is
+    # finished and where every deliverable goes — never what a clip or an
+    # episode is.
+
+    @staticmethod
+    def _media(store, project: Project, data: dict) -> dict:
+        """The recording's numbers: project.json when it has them, else the probe media_io wrote."""
+        media = data.get('media') if isinstance(data.get('media'), dict) else None
+        if media and media.get('duration_ms'):
+            return media
+        probed = read_json_or(store, project.analysis('media.json'), None)
+        if isinstance(probed, dict) and probed.get('duration_ms'):
+            return {k: probed.get(k) for k in ('duration_ms', 'width', 'height', 'fps', 'has_video')}
+        return media or {}
+
+    def _encode(self, ctx: dict) -> dict:
+        """The deliverables this run asks for: the pipe's profile, or 'render:' in the question."""
+        cfg = self.IGlobal.config
+        mode = str(ctx.get('render') or cfg['render_mode'] or 'preview').strip().lower()
+        if mode not in ('preview', 'export'):
+            mode = 'preview'
+        return {'mode': mode, 'size': int(cfg['size']), 'layouts': str(cfg['layouts']),
+                'fps': int(cfg['fps']), 'crf': int(cfg['crf']), 'preset': str(cfg['preset']),
+                'captions': bool(cfg['captions']), 'sidecars': bool(cfg['sidecars'])}
+
+    def _clip_spec(self, project: Project, ctx: dict, plan: dict) -> dict:
+        encode = self._encode(ctx)
+        clip_id = str(plan['clip_id'])
+        export = encode['mode'] == 'export'
+        write_to = project.exports(clip_id) if export else f'{project.root}/previews'
+        report_to = f'{write_to}/report.json' if export else project.previews(f'{clip_id}.json')
+        framing = clip_framing(plan, write_to=project.clip_dir(clip_id),
+                               thumbnails_to=project.clip_dir(clip_id), status_to=project.status_json,
+                               detect_width=DETECT_WIDTH)
+        return clip_render_spec(plan, encode=encode, write_to=write_to, report_to=report_to,
+                                status_to=project.status_json, framing=framing)
+
+    def _studio_render_spec(self, project: Project, prepared: dict) -> dict:
+        """The prepared episode, translated for the renderer (one tier, one set of files)."""
+        version = int(prepared.get('version') or 1)
+        rng = prepared.get('range') if isinstance(prepared.get('range'), (list, tuple)) and len(prepared.get('range') or []) == 2 else None
+        export = str(prepared.get('mode') or '').strip().lower() == 'export'
+        tier = studio_lib.render_tier(
+            mode=prepared.get('mode'), quality=prepared.get('quality'), has_range=bool(rng),
+            aspect=str((prepared.get('visual') or {}).get('aspect_ratio') or '16:9'),
+            media=prepared.get('media') or {}, audio=prepared.get('audio') or {}, size=prepared.get('size'))
+        if export:
+            write_to = project.exports(f'studio/v{version}')
+            report_to = f'{write_to}/report.json'
+        else:
+            write_to = project.previews('studio')
+            report_to = project.previews(f'studio/{studio_preview_name(version, rng)}.json')
+        return studio_render_spec(prepared, tier=tier, write_to=write_to, report_to=report_to,
+                                  status_to=project.status_json)
+
     # ---------------------------------------------------------------- studio
 
     def _studio(self, store, project: Project, ctx: dict, step: str, pipe) -> tuple[dict | None, dict]:
@@ -170,13 +248,14 @@ class IInstance(IInstanceBase):
         if step == 'init':
             return None, self._studio_init(store, project, ctx, pipe)
         if step in ('preview', 'export'):
-            spec = self._studio_spec(store, project, ctx, step, pipe)
-            return spec, {**project.to_ref(), 'studio': step, 'version': spec['version'],
-                          'output_duration_ms': spec['output_duration_ms'], 'quality': spec['quality'],
-                          'range': spec['range'], 'chapters': len(spec['chapters']),
-                          'corrections': spec.get('corrections_applied', 0),
-                          'spec': project.analysis(f"studio/prepared-v{spec['version']}.json"),
-                          'warnings': spec['warnings']}
+            prepared = self._studio_spec(store, project, ctx, step, pipe)
+            manifest = {**project.to_ref(), 'studio': step, 'version': prepared['version'],
+                        'output_duration_ms': prepared['output_duration_ms'], 'quality': prepared['quality'],
+                        'range': prepared['range'], 'chapters': len(prepared['chapters']),
+                        'corrections': prepared.get('corrections_applied', 0),
+                        'spec': project.analysis(f"studio/prepared-v{prepared['version']}.json"),
+                        'warnings': prepared['warnings']}
+            return self._studio_render_spec(project, prepared), manifest
         raise ValueError(f"{NODE}: unknown studio step {step!r} — use 'studio: init | preview | export'")
 
     def _studio_init(self, store, project: Project, ctx: dict, pipe) -> dict:
@@ -187,7 +266,7 @@ class IInstance(IInstanceBase):
         source = data.get('source')
         if not source:
             raise ValueError(f'{NODE}: project.json has no source')
-        media = data.get('media') or {}
+        media = self._media(store, project, data)
         transcript = read_json_or(store, project.analysis('transcript.json'), {}) or {}
         sentences = [s for s in (transcript.get('sentences') or []) if isinstance(s, dict)]
         duration_ms = int(media.get('duration_ms') or transcript.get('duration_ms') or 0)
@@ -273,7 +352,8 @@ class IInstance(IInstanceBase):
         update_status(store, project, NODE, 'preparing', pipe, studio=step, quality=quality,
                       edits=len(edits.get('operations') or []))
         spec = studio_lib.build_prepared(
-            project=project.root, episode_id=project.episode_id, source=source, media=data.get('media') or {},
+            project=project.root, episode_id=project.episode_id, source=source,
+            media=self._media(store, project, data),
             edits=edits, words=words, version=version, range_text=ctx.get('range'), quality=quality,
             asset_exists=lambda path: exists(store, path), mode=step, size=ctx.get('size'))
         if not words:
@@ -293,7 +373,7 @@ class IInstance(IInstanceBase):
         source = data.get('source')
         if not source:
             raise ValueError(f'{NODE}: project.json has no source')
-        media = data.get('media') or {}
+        media = self._media(store, project, data)
         duration_ms = int(media.get('duration_ms') or 0)
 
         clip_id = (ctx.get('clip') or '').strip()

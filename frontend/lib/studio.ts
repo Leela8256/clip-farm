@@ -2127,10 +2127,24 @@ export function validateProposal(raw: unknown, ctx: ValidateContext): EditPropos
 
   const out: ProposalItem[] = [];
   merged.forEach((item) => {
-    const clash = ctx.edits.operations.find((op) => op.enabled && overlaps([op.start_ms, op.end_ms], [item.start_ms, item.end_ms]));
+    // Time an enabled cut already removes from this stretch: a suggestion is
+    // only useless when the producer's own edits leave nothing of it to save.
+    // A partial overlap stays on the list (the panel badges it and the
+    // producer can take it anyway) but only counts the time it would add.
+    const span = Math.max(0, item.end_ms - item.start_ms);
+    const cuts = ctx.edits.operations
+      .filter((op) => op.enabled && op.type === "cut" && overlaps([op.start_ms, op.end_ms], [item.start_ms, item.end_ms]))
+      .map((op) => [Math.max(op.start_ms, item.start_ms), Math.min(op.end_ms, item.end_ms)] as [number, number])
+      .sort((a, b) => a[0] - b[0]);
+    let covered = 0;
+    let edge = item.start_ms;
+    for (const [a, b] of cuts) {
+      covered += Math.max(0, b - Math.max(a, edge));
+      edge = Math.max(edge, b);
+    }
     const ref = `${fmtPosition(item.start_ms)}–${fmtPosition(item.end_ms)}`;
-    if (clash) {
-      dropped.push({ ref, reason: "overlaps an edit you already made" });
+    if (span > 0 && covered >= span) {
+      dropped.push({ ref, reason: "already removed by your edits" });
       return;
     }
     const id = `i${String(out.length + 1).padStart(2, "0")}`;
@@ -2143,7 +2157,7 @@ export function validateProposal(raw: unknown, ctx: ValidateContext): EditPropos
       reason: item.reason,
       category: item.category,
       confidence: item.confidence,
-      saved_ms: proposalItemSavedMs(item),
+      saved_ms: Math.max(0, proposalItemSavedMs(item) - covered),
       status: "open",
       ...(item.sentences ? { sentences: item.sentences } : {}),
     });

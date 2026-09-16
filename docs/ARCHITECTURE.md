@@ -22,9 +22,11 @@ browser (Next.js, rocketride SDK)
 ```
 
 Stock nodes: `chat`, `audio_transcribe`, `embedding_transformer`, `qdrant`, `llm_anthropic`,
-`response_answers`, `response_documents`, `response_text`. Custom nodes (all under
-`local_nodes/`): `podcast_ingest`, `podcast_segment`, `podcast_refine`,
-`podcast_prepare_clip`, `podcast_render`. `docs/NODE_CATALOG.md` records why each of the
+`response_answers`, `response_documents`, `response_text`. Custom nodes (all under `local_nodes/`): three GENERIC, PR-ready nodes —
+`media_io`, `speaker_framing`, `media_render` — plus two app-glue nodes,
+`podcast_segment` and `podcast_prepare_clip`. Refinement (constraints/ranking)
+runs in the browser (`frontend/lib/refine.ts`) with a python twin
+(`podcast_common/refine.py`) for the CLI; see docs/UPSTREAM_NODES.md. `docs/NODE_CATALOG.md` records why each of the
 135 stock nodes was or wasn't used.
 
 ## Pipelines (`.rocketride/*.pipe`, mirrored byte-for-byte in `frontend/lib/pipelines/*.json`)

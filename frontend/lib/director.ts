@@ -11,6 +11,7 @@
  */
 
 import prompts from "./prompts/director.json";
+import { pyRound } from "./refine";
 import { fmtStamp, type Candidate, type ClipEdit, type Sentence } from "./podcast";
 
 export const DURATION_MODES = ["natural", "strict", "maximum"] as const;
@@ -96,8 +97,12 @@ export interface RequestCompliance {
   proposed: number;
   rejected: number;
   rejection_reasons: Record<string, number>;
+  /** what the request asked for, in seconds (the window the constraints enforced) */
+  duration?: { mode: string; target_seconds: number; window_seconds: number[] };
   all_topic_found?: boolean;
   profanity_free?: boolean;
+  /** anything the model wanted to say about the request itself */
+  notes?: string[];
   warnings: string[];
 }
 
@@ -242,7 +247,8 @@ function choice<T extends string>(value: unknown, allowed: readonly T[], fallbac
   return fallback;
 }
 
-const round1 = (n: number) => Math.round(n * 10) / 10;
+// the same rounding the python spec twin uses (lib/refine.ts explains why it is not Math.round)
+const round1 = (n: number) => pyRound(n, 1);
 
 /** Coerce the LLM's JSON into the canonical spec; unusable values become defaults plus a warning. */
 export function normalizeSpec(raw: unknown, defaults: { count?: number; target_seconds?: number } = {}): RequestSpec {

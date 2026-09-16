@@ -113,7 +113,7 @@ export default function ProposalPanel({
               {fmtDuration(proposal.totals.removed_ms)} would come out
               {takenMs ? ` · ${fmtDuration(takenMs)} taken so far` : ""}
             </span>
-            {proposal.dropped.length ? <span className="text-ink-faint">{proposal.dropped.length} left out (they clashed with your edits)</span> : null}
+            {proposal.dropped.length ? <span className="text-ink-faint">{proposal.dropped.length} left out (already removed by your edits)</span> : null}
           </div>
 
           {proposal.notes ? <p className="border-b border-line px-3.5 py-1.5 text-[11px] text-ink-dim">{proposal.notes}</p> : null}
